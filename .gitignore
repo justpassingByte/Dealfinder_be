@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# build
+dist/
+
+# environment variables
+.env
+.env.local
+.env.*.local
+
+# debug and logs
+*.log
+npm-debug.log*
+error_drission.html
+
+# session and sensitive data
+*_session.json
+raw_cookies.json
+debug_classes.json
+shopee_user_profile/
+
+# OS files
+.DS_Store
+Thumbs.db
