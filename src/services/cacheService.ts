@@ -44,7 +44,7 @@ export async function isJobInFlight(query: string): Promise<boolean> {
  */
 export async function markJobInFlight(query: string): Promise<void> {
     const key = `${PREFIX}inflight:${query.toLowerCase().trim()}`;
-    await redis.set(key, '1', 'EX', 30); // 30 seconds max
+    await redis.set(key, '1', 'EX', 120); // 120 seconds max to handle stealthy scraper delays
 }
 
 /**

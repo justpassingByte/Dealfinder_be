@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+﻿import { Router, Request, Response } from 'express';
 import { scraperQueue } from '../config/queue';
 import { QueueEvents } from 'bullmq';
 import { config } from '../config/env';
@@ -53,7 +53,7 @@ function buildListingKey(listing: Pick<Listing, 'url' | 'title' | 'price'>): str
     return `${listing.url}|${listing.title}|${listing.price}`;
 }
 
-async function fetchListingsForQuery(query: string, maxItems = 30): Promise<SearchResult> {
+async function fetchListingsForQuery(query: string, maxItems = 60): Promise<SearchResult> {
     // 1. Check Redis cache first (ioredis-mock works here)
     const cached = await getCachedListings(query);
     if (cached) {
@@ -66,7 +66,7 @@ async function fetchListingsForQuery(query: string, maxItems = 30): Promise<Sear
     if (config.redis.useMock) {
         console.log(`[Search] Mock Mode: Scraping directly for "${query}"`);
         try {
-            const listings = await scrapeListings(query, 'shopee');
+            const listings = await scrapeListings(query, 'shopee', maxItems);
             if (listings.length > 0) {
                 await setCachedListings(query, listings);
             }
@@ -107,6 +107,8 @@ async function fetchListingsForQuery(query: string, maxItems = 30): Promise<Sear
 
 router.get('/search', async (req: Request, res: Response) => {
     const q = (req.query.q as string | undefined)?.trim();
+    const maxItemsParam = req.query.maxItems as string | undefined;
+    const maxItems = maxItemsParam ? parseInt(maxItemsParam, 10) : 80;
 
     if (!q) {
         console.warn('[Search] Rejecting request: missing query parameter "q"');
@@ -114,8 +116,42 @@ router.get('/search', async (req: Request, res: Response) => {
         return;
     }
 
-    console.log(`[Search] New request for query: "${q}"`);
-    const result = await fetchListingsForQuery(q);
+    console.log(`[Search] New request for query: "${q}" (maxItems=${maxItems})`);
+
+    // Special logic for Mock Mode to support 202 Polling
+    if (config.redis.useMock) {
+        const cached = await getCachedListings(q);
+        if (cached) {
+            res.json({ source: 'cache', listings: cached });
+            return;
+        }
+
+        const inFlight = await isJobInFlight(q);
+        if (inFlight) {
+            res.status(202).json({ message: 'Search in progress...' });
+            return;
+        }
+
+        // Run non-blocking so we can return 202
+        markJobInFlight(q);
+        scrapeListings(q, 'shopee', maxItems)
+            .then(async (listings) => {
+                if (listings.length > 0) {
+                    await setCachedListings(q, listings);
+                }
+                await clearJobInFlight(q);
+                console.log(`[Search] Mock-scraper background job finished for "${q}"`);
+            })
+            .catch(async (err) => {
+                console.error('[Search] Mock-scraper background job failed:', err);
+                await clearJobInFlight(q);
+            });
+
+        res.status(202).json({ message: 'Search started, please poll again in 5-10 seconds.' });
+        return;
+    }
+
+    const result = await fetchListingsForQuery(q, maxItems);
 
     if (!result.ok) {
         res.status(result.status).json(result.payload);
@@ -136,7 +172,7 @@ router.get('/shopee/best-deals', async (req: Request, res: Response) => {
     const limit = parseLimit(req.query.limit as string | undefined, 10);
     console.log(`[Deals] One-click best deals request for query: "${q}" (limit=${limit})`);
 
-    const maxItems = Math.max(limit, 30);
+    const maxItems = Math.max(limit, 60);
     const result = await fetchListingsForQuery(q, maxItems);
     if (!result.ok) {
         res.status(result.status).json(result.payload);
@@ -201,3 +237,4 @@ router.get('/shopee/best-deals', async (req: Request, res: Response) => {
 });
 
 export default router;
+

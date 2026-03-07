@@ -1,0 +1,15 @@
+{
+    "watch": [
+        "src",
+        "package.json",
+        "tsconfig.json",
+        ".env"
+    ],
+    "ext": "ts,json",
+    "ignore": [
+        "src/**/*.test.ts",
+        "shopee_user_profile/*",
+        "drission_screenshot.png",
+        "shopee_session.json"
+    ]
+}

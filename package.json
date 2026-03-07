@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/scraperWorker.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:search-pipeline",
+    "test:search-pipeline": "node --test -r ts-node/register src/services/searchPipeline.test.ts"
   },
   "keywords": [],
   "author": "",

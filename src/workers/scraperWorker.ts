@@ -1,4 +1,4 @@
-import { Worker, Job } from 'bullmq';
+﻿import { Worker, Job } from 'bullmq';
 import { config } from '../config/env';
 import { scrapeListings } from '../services/scraperService';
 import { setCachedListings, clearJobInFlight } from '../services/cacheService';
@@ -20,13 +20,13 @@ if (!config.redis.useMock) {
     scraperWorker = new Worker<ScraperJobData, ScraperJobResult>(
         'scraper',
         async (job: Job<ScraperJobData>) => {
-            const { query, marketplace, maxItems } = job.data;
+            const { query, marketplace, maxItems = 60 } = job.data;
             console.log(
-                `[ScraperWorker] Processing job ${job.id}: query="${query}", marketplace="${marketplace || 'all'}", maxItems="${maxItems || 30}"`
+                `[ScraperWorker] Processing job ${job.id}: query="${query}", marketplace="${marketplace || 'all'}", maxItems="${maxItems}"`
             );
 
             try {
-                const listings = await scrapeListings(query, marketplace);
+                const listings = await scrapeListings(query, marketplace, maxItems);
 
                 if (listings.length > 0) {
                     await setCachedListings(query, listings);

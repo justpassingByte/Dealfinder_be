@@ -8,4 +8,7 @@ export interface Listing {
     url: string;
     image: string;
     marketplace: string;
+    score?: number;
+    relevanceScore?: number;
+    matchRate?: number;
 }

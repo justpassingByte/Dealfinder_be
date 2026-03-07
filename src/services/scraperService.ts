@@ -1,54 +1,91 @@
-/**
- * Scraper service — THE HYBRID SOLUTION (Node.js + Python).
- * Node.js handles the core logic, Python handles the Shopee bypass.
+﻿/**
+ * Scraper service (Node.js + Python).
+ * Python handles scraping; Node.js applies post-scrape filtering/scoring.
  */
 
 import { spawn } from 'child_process';
 import path from 'path';
 import { Listing } from '../types/listing';
+import { searchPipelineService } from './searchPipeline';
 
-async function runPythonScraper(query: string): Promise<Listing[]> {
+const DEFAULT_MAX_ITEMS = 80;
+const MAX_ALLOWED_ITEMS = 120;
+
+function clampMaxItems(value?: number): number {
+    if (!value || Number.isNaN(value)) {
+        return DEFAULT_MAX_ITEMS;
+    }
+    return Math.max(1, Math.min(value, MAX_ALLOWED_ITEMS));
+}
+
+async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Promise<Listing[]> {
+    const safeMaxItems = clampMaxItems(maxItems);
+
     return new Promise((resolve) => {
         const pythonScript = path.join(process.cwd(), 'scripts', 'shopee_scraper.py');
-        const pythonProcess = spawn('python', [pythonScript, query]);
+        const pythonProcess = spawn('python', [pythonScript, query, String(safeMaxItems)]);
 
         let dataString = '';
-        let errorString = '';
+        let isBlocked = false;
 
         pythonProcess.stdout.on('data', (data) => {
             dataString += data.toString();
         });
 
         pythonProcess.stderr.on('data', (data) => {
-            errorString += data.toString();
-            console.error(`[Python Worker stderr]: ${data.toString()}`);
+            const errOutput = data.toString();
+            console.error(`[Python Worker stderr]: ${errOutput}`);
+            if (errOutput.includes('CAPTCHA') || errOutput.includes('Blocked')) {
+                isBlocked = true;
+            }
         });
 
         pythonProcess.on('close', (code) => {
-            if (code !== 0) {
-                console.warn(`[Scraper] Python Worker failed (code ${code}). Is Python installed?`);
-                return resolve([]);
+            if (isBlocked) {
+                console.error(`[Scraper] CRITICAL: Scraper was blocked by Shopee security.`);
+            }
+
+            if (code !== 0 && !dataString) {
+                console.warn(`[Scraper] Python worker failed (code ${code}).`);
+                resolve([]);
+                return;
             }
 
             try {
-                // If the python script outputs extra text to stdout before JSON, we could have parse errors.
-                // It should only ever print JSON to stdout and everything else to stderr.
                 const results = JSON.parse(dataString);
-                return resolve(results.map((item: any) => ({
-                    ...item,
-                    marketplace: 'shopee'
-                })));
-            } catch (err) {
-                console.error('[Scraper] JSON Parse Error from Python:', dataString.substring(0, 500));
+                const listings: Listing[] = Array.isArray(results)
+                    ? results.map((item: any) => ({
+                        ...item,
+                        marketplace: 'shopee',
+                    }))
+                    : [];
+                resolve(listings);
+            } catch {
+                console.error('[Scraper] JSON parse error from Python output:', dataString.substring(0, 500));
                 resolve([]);
             }
         });
     });
 }
 
-export async function scrapeListings(query: string, marketplace?: string): Promise<Listing[]> {
-    if (!marketplace || marketplace === 'shopee') {
-        return await runPythonScraper(query);
+export async function scrapeListings(query: string, marketplace?: string, maxItems = DEFAULT_MAX_ITEMS): Promise<Listing[]> {
+    if (marketplace && marketplace !== 'shopee') {
+        return [];
     }
-    return [];
+
+    const rawListings = await runPythonScraper(query, maxItems);
+    if (rawListings.length === 0) {
+        return [];
+    }
+
+    const filtered = searchPipelineService.process(rawListings, query, 10);
+    if (filtered.length > 0) {
+        return filtered;
+    }
+
+    // Fallback: keep a stable subset if strict filtering eliminates all records.
+    return rawListings
+        .filter((listing) => listing.price > 0)
+        .sort((a, b) => a.price - b.price)
+        .slice(0, 10);
 }
