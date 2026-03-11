@@ -1,4 +1,4 @@
-﻿import { Listing } from '../types/listing';
+import { Listing } from '../types/listing';
 
 export interface RankedListing extends Listing {
     relevanceScore: number;
@@ -137,12 +137,16 @@ export class SearchPipelineService {
     }
 
     public filterAccessoryKeywords(listings: Listing[], query: string): Listing[] {
-        const queryTokensFiltered = this.tokenize(query).map(removeVietnameseAccents);
-        const queryTokensSet = new Set(queryTokensFiltered);
+        // Normalize the full query string for multi-word keyword matching
+        const normalizedQuery = removeVietnameseAccents(this.normalizeTitle(query));
+        // Also keep individual tokens for single-word keyword matching
+        const queryTokensSet = new Set(normalizedQuery.split(' ').filter(Boolean));
 
         const activeAccessoryKeywords = this.config.accessoryKeywords.filter((keyword) => {
             const normalizedKeyword = removeVietnameseAccents(this.normalizeTitle(keyword));
-            return !queryTokensSet.has(normalizedKeyword);
+            // Multi-word keyword: check if query contains it as a substring
+            // Single-word keyword: check if it's in the token set (same as before)
+            return !normalizedQuery.includes(normalizedKeyword);
         });
 
         return listings.filter((listing) => {
@@ -216,10 +220,14 @@ export class SearchPipelineService {
                 relevanceScore += 1;
             }
 
+            const normalizedQueryNeutral = removeVietnameseAccents(this.normalizeTitle(query));
             const normalizedTitleNeutral = removeVietnameseAccents(normalizedTitle);
             const accessoryPenalty = this.config.accessoryKeywords.some((keyword) => {
                 const normalizedKeywordNeutral = removeVietnameseAccents(this.normalizeTitle(keyword));
-                return normalizedKeywordNeutral.length > 0 && normalizedTitleNeutral.includes(normalizedKeywordNeutral);
+                if (normalizedKeywordNeutral.length === 0) return false;
+                // Only trigger penalty if the keyword is STILl "active" (not in query)
+                const isStillActiveAccessory = !normalizedQueryNeutral.includes(normalizedKeywordNeutral);
+                return isStillActiveAccessory && normalizedTitleNeutral.includes(normalizedKeywordNeutral);
             });
 
             if (accessoryPenalty) {

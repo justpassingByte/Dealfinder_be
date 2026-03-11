@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Scraper service (Node.js + Python).
  * Python handles scraping; Node.js applies post-scrape filtering/scoring.
  */
@@ -52,6 +52,11 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Pr
             }
 
             try {
+                if (!dataString.trim()) {
+                    console.warn(`[Scraper] Python worker returned empty output (query: "${query}").`);
+                    resolve([]);
+                    return;
+                }
                 const results = JSON.parse(dataString);
                 const listings: Listing[] = Array.isArray(results)
                     ? results.map((item: any) => ({
@@ -59,9 +64,11 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Pr
                         marketplace: 'shopee',
                     }))
                     : [];
+                console.log(`[Scraper] Successfully parsed ${listings.length} listings for "${query}"`);
                 resolve(listings);
-            } catch {
-                console.error('[Scraper] JSON parse error from Python output:', dataString.substring(0, 500));
+            } catch (err) {
+                console.error('[Scraper] JSON parse error from Python output. First 200 chars:', dataString.substring(0, 200));
+                console.error('[Scraper] Error details:', err);
                 resolve([]);
             }
         });

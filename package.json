@@ -9,7 +9,11 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/scraperWorker.js",
-    "test": "npm run test:search-pipeline",
+    "migrate": "ts-node src/migrate.ts",
+    "migrate:catalog": "ts-node src/migrateCatalog.ts",
+    "migrate:catalog:down": "ts-node src/migrateCatalog.ts --down",
+    "test": "npm run test:signature && npm run test:search-pipeline",
+    "test:signature": "node --test -r ts-node/register src/services/signatureService.test.ts",
     "test:search-pipeline": "node --test -r ts-node/register src/services/searchPipeline.test.ts"
   },
   "keywords": [],

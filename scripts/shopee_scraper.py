@@ -162,6 +162,8 @@ def _extract_listing(item) -> Optional[Dict]:
                     continue
             except:
                 pass
+            if line.startswith('-') and line.endswith('%'):
+                continue
             clean_lines.append(line)
 
         if clean_lines:

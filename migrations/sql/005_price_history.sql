@@ -1,0 +1,10 @@
+-- UP
+CREATE TABLE IF NOT EXISTS price_history (
+  id BIGSERIAL PRIMARY KEY,
+  listing_id UUID REFERENCES listings(id) ON DELETE CASCADE,
+  price DECIMAL(15, 2) NOT NULL,
+  recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- DOWN
+DROP TABLE IF EXISTS price_history;

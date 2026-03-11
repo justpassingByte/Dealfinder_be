@@ -1,4 +1,4 @@
-﻿import { Router, Request, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { scraperQueue } from '../config/queue';
 import { QueueEvents } from 'bullmq';
 import { config } from '../config/env';
@@ -12,6 +12,7 @@ import {
 import { scrapeListings } from '../services/scraperService';
 import { compareListings } from '../services/compareService';
 import { detectDeals, DealAlert } from '../services/aiService';
+import { catalogSearch } from '../services/catalogSearchService';
 import { Listing } from '../types/listing';
 
 const router = Router();
@@ -236,5 +237,106 @@ router.get('/shopee/best-deals', async (req: Request, res: Response) => {
     });
 });
 
-export default router;
+// ═══════════════════════════════════════════════════════
+//  URL DETECTION HELPER
+// ═══════════════════════════════════════════════════════
+const MARKETPLACE_URL_REGEX = /^https?:\/\/(www\.)?(shopee\.(vn|co\.id|com\.my|ph|sg|co\.th|com\.br)|lazada\.(vn|co\.id|com\.my|com\.ph|sg|co\.th))\//i;
 
+function isMarketplaceUrl(input: string): boolean {
+    return MARKETPLACE_URL_REGEX.test(input.trim());
+}
+
+/**
+ * Extract a product title from a marketplace URL path.
+ * e.g. "https://shopee.vn/Dien-thoai-iPhone-15-Pro-Max-i.123.456" → "Dien thoai iPhone 15 Pro Max"
+ */
+function extractTitleFromUrl(url: string): string {
+    try {
+        const parsed = new URL(url.trim());
+        let pathPart = parsed.pathname.split('/').filter(Boolean).pop() || '';
+        // Remove Shopee's "-i.shopId.itemId" suffix
+        pathPart = pathPart.replace(/-i\.\d+\.\d+$/, '');
+        // Replace hyphens with spaces and clean up
+        return pathPart.replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
+    } catch {
+        return url;
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+//  CATALOG-POWERED SEARCH (New Pipeline)
+// ═══════════════════════════════════════════════════════
+router.get('/search/catalog', async (req: Request, res: Response) => {
+    let q = (req.query.q as string | undefined)?.trim();
+    if (!q) {
+        res.status(400).json({ error: 'Missing query parameter "q".' });
+        return;
+    }
+
+    // ── URL Detection: if user pastes a marketplace URL, extract the title ──
+    if (isMarketplaceUrl(q)) {
+        console.log(`[Catalog Search] Detected marketplace URL, extracting title...`);
+        q = extractTitleFromUrl(q);
+        console.log(`[Catalog Search] Extracted query: "${q}"`);
+    }
+
+    const maxItems = parseInt(req.query.maxItems as string || '60', 10);
+    console.log(`[Catalog Search] Query: "${q}" (maxItems=${maxItems})`);
+
+    try {
+        const result = await catalogSearch(q, maxItems);
+
+        // Flatten variants+listings into a unified response with deal intelligence
+        interface FlatListing extends Listing {
+            listingId?: string;
+            isDeal?: boolean;
+            discountPercent?: number;
+            medianPrice?: number;
+            lowestPrice?: number;
+        }
+
+        const flatListings: FlatListing[] = [];
+        for (const group of result.variants) {
+            for (const listing of group.listings) {
+                const l = listing as any;
+                flatListings.push({
+                    title: group.variant.normalized_variant_name || '',
+                    price: parseFloat(l.price as unknown as string),
+                    rating: l.rating ? parseFloat(l.rating as unknown as string) : 0,
+                    sold: l.sold,
+                    shop: l.shop_name,
+                    url: l.product_url,
+                    image: l.image_url || '',
+                    marketplace: l.marketplace,
+                    // Deal intelligence fields
+                    listingId: l.id,
+                    score: l.score ?? undefined,
+                    isDeal: l.isDeal ?? false,
+                    discountPercent: l.discountPercent ?? 0,
+                    medianPrice: l.medianPrice ?? undefined,
+                    lowestPrice: l.lowestPrice ?? undefined,
+                });
+            }
+        }
+
+        res.json({
+            source: result.source,
+            product: result.product ? {
+                id: result.product.id,
+                name: result.product.normalized_name,
+                signature: result.product.product_signature,
+                brand: result.product.brand,
+                searchCount: result.product.search_count,
+                lastScraped: result.product.last_scraped_at,
+            } : null,
+            variantCount: result.variants.length,
+            totalListings: flatListings.length,
+            listings: flatListings.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
+        });
+    } catch (err) {
+        console.error('[Catalog Search] Error:', err);
+        res.status(500).json({ error: 'Catalog search failed.' });
+    }
+});
+
+export default router;
