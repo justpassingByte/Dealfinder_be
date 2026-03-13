@@ -33,7 +33,8 @@ const DEFAULT_CONFIG: PipelineConfig = {
         'bag', 'pouch', 'skin', 'sticker', 'bao da', 'op lung', 'tai nghe',
         'sac', 'cuong luc', 'mieng dan', 'cục sạc', 'dây sạc', 'ốp lưng',
         'kính cường lực', 'dán màn hình', 'tai nghe', 'pin dự phòng', 'sạc dự phòng',
-        'ốp', 'vỏ', 'phụ kiện', 'dành cho', 'giá đỡ', 'cáp', 'dây đeo'
+        'ốp', 'vỏ', 'phụ kiện', 'dành cho', 'giá đỡ', 'cáp', 'dây đeo', 'box', 'hộp', 'khay sim',
+        'cường lực', 'chống nhìn trộm', 'camera lens'
     ]
 };
 
@@ -137,23 +138,36 @@ export class SearchPipelineService {
     }
 
     public filterAccessoryKeywords(listings: Listing[], query: string): Listing[] {
-        // Normalize the full query string for multi-word keyword matching
         const normalizedQuery = removeVietnameseAccents(this.normalizeTitle(query));
-        // Also keep individual tokens for single-word keyword matching
-        const queryTokensSet = new Set(normalizedQuery.split(' ').filter(Boolean));
+        const queryTokens = new Set(normalizedQuery.split(' ').filter(Boolean));
 
         const activeAccessoryKeywords = this.config.accessoryKeywords.filter((keyword) => {
             const normalizedKeyword = removeVietnameseAccents(this.normalizeTitle(keyword));
-            // Multi-word keyword: check if query contains it as a substring
-            // Single-word keyword: check if it's in the token set (same as before)
-            return !normalizedQuery.includes(normalizedKeyword);
+            const keywordTokens = normalizedKeyword.split(' ').filter(Boolean);
+            
+            // If any token of the accessory keyword is a primary part of the search query, 
+            // we assume the user is actually LOOKING for that accessory.
+            // e.g. Query "ốp lưng iphone" -> don't filter out "ốp lưng".
+            return !keywordTokens.every(token => queryTokens.has(token));
         });
 
         return listings.filter((listing) => {
             const title = removeVietnameseAccents(this.normalizeTitle(listing.title));
+            const titleTokens = new Set(title.split(' ').filter(Boolean));
+
             return !activeAccessoryKeywords.some((keyword) => {
                 const normalizedKeyword = removeVietnameseAccents(this.normalizeTitle(keyword));
-                return normalizedKeyword.length > 0 && title.includes(normalizedKeyword);
+                const keywordTokens = normalizedKeyword.split(' ').filter(Boolean);
+                
+                if (keywordTokens.length === 0) return false;
+                
+                // Multi-word keyword (e.g. "op lung"): check if all parts are in the title
+                if (keywordTokens.length > 1) {
+                    return normalizedKeyword.length > 0 && title.includes(normalizedKeyword);
+                }
+                
+                // Single-word keyword (e.g. "op"): use token match to avoid "op" matching "oppo"
+                return titleTokens.has(keywordTokens[0]);
             });
         });
     }

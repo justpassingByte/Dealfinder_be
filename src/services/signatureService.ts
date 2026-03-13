@@ -236,8 +236,21 @@ export function generateSignatures(title: string): SignatureResult {
         (MODEL_TOKENS.has(token) || /[a-z]/.test(token) || /^\d+$/.test(token))
     );
 
+    // 4.5 Detect if this is an accessory (independent of query)
+    const accessoryKeywords = [
+        'op', 'case', 'cover', 'charger', 'sac', 'cable', 'cap', 'adapter', 'screen protector',
+        'tempered', 'glass', 'cuong luc', 'strap', 'band', 'holder', 'gia do', 'tripod',
+        'bag', 'pouch', 'skin', 'sticker', 'bao da', 'tai nghe', 'mieng dan',
+        'phu kien', 'box', 'hop', 'khay sim', 'chong nhin trom'
+    ];
+    const isAccessory = accessoryKeywords.some(ak => {
+        if (ak.includes(' ')) return normalized.includes(ak);
+        return tokens.includes(ak);
+    });
+
     // 5. Build product signature: brand + model tokens
     const sigParts: string[] = [];
+    if (isAccessory) sigParts.push('acc'); // Prefix for accessories
     if (brand) sigParts.push(brand);
     sigParts.push(...modelTokens);
     const productSignature = sigParts.join('_') || 'unknown';

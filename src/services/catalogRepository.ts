@@ -420,9 +420,14 @@ export async function getHotDeals(limit = 12): Promise<any[]> {
     const { rows } = await db.query(
         `SELECT
             l.id as "listingId",
+            l.item_id as "itemId",
             l.price,
+            l.rating,
+            l.sold,
+            l.shop_name as "shopName",
             l.image_url as "imageUrl",
             l.discount_percent as "discountPercent",
+            l.marketplace,
             v.storage,
             v.color,
             p.normalized_name as "productName"
@@ -435,5 +440,11 @@ export async function getHotDeals(limit = 12): Promise<any[]> {
          LIMIT $1`,
         [limit]
     );
-    return rows;
+    return rows.map(r => ({
+        ...r,
+        price: Number(r.price),
+        rating: Number(r.rating || 0),
+        sold: Number(r.sold || 0),
+        discountPercent: Number(r.discountPercent || 0)
+    }));
 }
