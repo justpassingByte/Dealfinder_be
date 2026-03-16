@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getTopProducts } from '../services/catalogRepository';
+import { getTopProducts, getTrendingQueries } from '../services/catalogRepository';
 
 const router = Router();
 
@@ -10,10 +10,15 @@ const router = Router();
 router.get('/trends', async (req: Request, res: Response) => {
     try {
         const limit = parseInt(req.query.limit as string || '8', 10);
-        const products = await getTopProducts(limit);
         
-        // Return only the names for the trend tags
-        const trends = products.map(p => p.normalized_name);
+        // 1. Try to get literal query trends first (most accurate for "Xu hướng")
+        let trends = await getTrendingQueries(limit);
+        
+        // 2. Fallback to top products if no search logs yet
+        if (trends.length === 0) {
+            const products = await getTopProducts(limit);
+            trends = products.map(p => p.normalized_name);
+        }
         
         res.json({ trends });
     } catch (err) {

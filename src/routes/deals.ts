@@ -13,19 +13,22 @@ const HOT_DEALS_TTL = 300; // 5 minutes
  */
 router.get('/hot', async (req: Request, res: Response) => {
     try {
+        const limit = parseInt(req.query.limit as string || '6', 10);
+        const cacheKey = `${HOT_DEALS_CACHE_KEY}:${limit}`;
+
         // Check cache first
-        const cached = await redis.get(HOT_DEALS_CACHE_KEY);
+        const cached = await redis.get(cacheKey);
         if (cached) {
-            console.log('[Hot Deals] Cache hit');
+            console.log(`[Hot Deals] Cache hit for limit ${limit}`);
             res.json({ deals: JSON.parse(cached) });
             return;
         }
 
-        console.log('[Hot Deals] Cache miss, fetching from DB');
-        const deals = await getHotDeals(12);
+        console.log(`[Hot Deals] Cache miss for limit ${limit}, fetching from DB`);
+        const deals = await getHotDeals(limit);
 
         // Seed cache
-        await redis.set(HOT_DEALS_CACHE_KEY, JSON.stringify(deals), 'EX', HOT_DEALS_TTL);
+        await redis.set(cacheKey, JSON.stringify(deals), 'EX', HOT_DEALS_TTL);
 
         res.json({ deals });
     } catch (err) {

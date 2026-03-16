@@ -448,3 +448,33 @@ export async function getHotDeals(limit = 12): Promise<any[]> {
         discountPercent: Number(r.discountPercent || 0)
     }));
 }
+// ═══════════════════════════════════════════════════════
+//  SEARCH LOGGING & TRENDS
+// ═══════════════════════════════════════════════════════
+
+/**
+ * Log a literal search query.
+ */
+export async function logSearchQuery(query: string): Promise<void> {
+    if (!query || query.length < 2) return;
+    await db.query(
+        `INSERT INTO search_logs (query) VALUES ($1)`,
+        [query.toLowerCase().trim()]
+    );
+}
+
+/**
+ * Get top trending queries from the last 7 days.
+ */
+export async function getTrendingQueries(limit = 10): Promise<string[]> {
+    const { rows } = await db.query(
+        `SELECT query, COUNT(*) as count 
+         FROM search_logs 
+         WHERE created_at > NOW() - INTERVAL '7 days'
+         GROUP BY query 
+         ORDER BY count DESC 
+         LIMIT $1`,
+        [limit]
+    );
+    return rows.map(r => r.query);
+}

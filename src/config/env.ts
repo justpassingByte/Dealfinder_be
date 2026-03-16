@@ -10,7 +10,7 @@ export const config = {
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
         useMock: process.env.USE_REDIS_MOCK === 'true',
     },
-    affiliateBaseUrl: process.env.AFFILIATE_BASE_URL || 'https://affiliate.example.com/redirect?url=',
+    affiliateBaseUrl: process.env.AFFILIATE_BASE_URL || 'https://shopee.vn/universal-link/',
     cacheTtlSeconds: parseInt(process.env.CACHE_TTL_SECONDS || '600', 10),
     jwtSecret: process.env.JWT_SECRET || 'dealfinder-dev-secret-change-in-production',
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
@@ -20,5 +20,7 @@ export const config = {
         shopId: parseInt(process.env.SHOPEE_SHOP_ID || '0', 10),
         accessToken: process.env.SHOPEE_ACCESS_TOKEN || '',
         baseUrl: process.env.SHOPEE_API_BASE_URL || 'https://partner.shopeemobile.com',
+        affiliateId: process.env.SHOPEE_AFFILIATE_ID || '',
+        subIdPrefix: process.env.SHOPEE_SUB_ID_PREFIX || 'listing',
     },
 };

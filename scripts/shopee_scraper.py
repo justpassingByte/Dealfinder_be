@@ -1,4 +1,4 @@
-﻿"""
+"""
 Robust Shopee scraper using DrissionPage.
 - Fetches multiple search pages and scrolls each page.
 - Returns raw listings as JSON on stdout.
@@ -203,49 +203,183 @@ def _scroll_page(page, max_scrolls: int = 5) -> None:
 
 import random
 
+def _human_scroll(page, steps=None):
+    """Scroll down in steps like a human would, often stopping to 'read'."""
+    if steps is None:
+        steps = random.randint(3, 6)
+        
+    for _ in range(steps):
+        # Random scroll distance
+        distance = random.randint(300, 800)
+        page.scroll.down(distance)
+        # Random wait after scrolling
+        time.sleep(random.uniform(0.5, 1.5))
+        # 30% chance of scrolling back up a little bit (as if re-reading)
+        if random.random() < 0.3:
+            page.scroll.up(random.randint(100, 300))
+            time.sleep(random.uniform(0.3, 0.8))
+
+def _random_mouse_behavior(page):
+    """Hover over some elements to simulate interest."""
+    try:
+        # Find some random items or links to hover
+        elements = page.eles('css:a, button, .shopee-search-item-result__item')
+        if elements:
+            to_hover = random.sample(elements, min(len(elements), 3))
+            for el in to_hover:
+                try:
+                    page.actions.move_to(el)
+                    time.sleep(random.uniform(0.2, 0.6))
+                except:
+                    pass
+    except:
+        pass
+
+def get_consistent_ua(profile_path: str) -> str:
+    """Ensure a profile always uses the same User-Agent to avoid detection."""
+    ua_file = os.path.join(profile_path, 'user_agent.txt')
+    if not os.path.exists(profile_path):
+        os.makedirs(profile_path, exist_ok=True)
+        
+    if os.path.exists(ua_file):
+        try:
+            with open(ua_file, 'r') as f:
+                ua = f.read().strip()
+                if ua: return ua
+        except:
+            pass
+    
+    # Default realistic UA if not found
+    new_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    try:
+        with open(ua_file, 'w') as f:
+            f.write(new_ua)
+    except:
+        pass
+    return new_ua
+
 def search_shopee(query: str, max_items: int = 100) -> List[Dict]:
-    co = ChromiumOptions().set_argument('--no-sandbox')
+    profile_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shopee_user_profile')
+    ua = get_consistent_ua(profile_path)
+
+    co = ChromiumOptions()
+    co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
     co.set_argument('--disable-dev-shm-usage')
-    co.set_argument('--blink-settings=imagesEnabled=false') # Speed up & reduce footprint
-    
-    # Use a realistic, randomized user agent
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    ]
-    co.set_user_agent(random.choice(user_agents))
-
-    profile_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shopee_user_profile')
+    co.set_user_agent(ua)
     co.set_user_data_path(profile_path)
-
-    page = ChromiumPage(co)
-
-    max_items = max(1, min(max_items, 120))
-    # Limit to 1 page to speed up the process and avoid irrelevant accessories on later pages
-    max_pages = 1
-    base_url = f"https://shopee.vn/search?keyword={query.replace(' ', '%20')}"
-
-    results: List[Dict] = []
-    seen_keys = set()
+    # Set a fixed port to allow multiple script runs to connect to the same browser instance
+    co.set_local_port(9222)
+    
+    # Images ON is safer for anti-bot detection.
+    co.set_argument('--blink-settings=imagesEnabled=true') 
 
     try:
-        for page_idx in range(max_pages):
-            if page_idx == 0:
-                page_url = base_url
-            else:
-                page_url = f"{base_url}&page={page_idx + 1}"
-                
-            print(f"[Scraper] Fetching page {page_idx + 1}/{max_pages}: {page_url}", file=sys.stderr)
+        # ChromiumPage will connect to port 9222 if already open, or start a new browser.
+        page = ChromiumPage(co)
+        
+        # --- HUMAN WARMUP / SESSION CHECK ---
+        if 'shopee.vn' not in page.url:
+            print(f"[Scraper] Fresh session or different site. Navigating to homepage...", file=sys.stderr)
+            page.get('https://shopee.vn/')
+            time.sleep(random.uniform(2.0, 4.0))
+            # Look around a bit if it's the first time
+            _human_scroll(page, steps=random.randint(2, 4))
+            _random_mouse_behavior(page)
+        else:
+            print(f"[Scraper] Reusing existing browser tab at {page.url}", file=sys.stderr)
 
-            page.get(page_url)
-            
-            # Check for Captcha/Block
-            page_title = page.title.lower()
-            if 'captcha' in page_title or 'verify' in page_title or 'robot' in page_title:
-                print(f"[Scraper] ERROR: Blocked by CAPTCHA/Verification on page {page_idx + 1}", file=sys.stderr)
-                page.get_screenshot(path='drission_screenshot.png', full_page=True)
+        # Check for initial captcha
+        if 'captcha' in page.title.lower() or 'verify' in page.title.lower():
+            print(f"[Scraper] Blocked or Verification needed. Attempting human interaction...", file=sys.stderr)
+            _human_scroll(page, steps=2)
+            time.sleep(2)
+        
+        # chromium-based popups or shopee overlays handling
+        try:
+            # Common shopee popup close buttons
+            for selector in ['css:.shopee-popup__close-btn', 'css:.shopee-modal__close']:
+                close_btn = page.ele(selector, timeout=1)
+                if close_btn:
+                    close_btn.click()
+                    time.sleep(1)
+        except:
+            pass
+
+        # --- SEARCH PHASE ---
+        max_items = max(1, min(max_items, 120))
+        max_pages = 1
+        
+        # Human way: type into search bar
+        search_input = page.ele('css:.shopee-searchbar-input__input', timeout=5)
+        if search_input:
+            # Skip typing if manual solve already navigated us to results
+            curr_url = page.url.lower()
+            if 'search' in curr_url and (query.replace(' ', '+').lower() in curr_url or query.replace(' ', '%20').lower() in curr_url):
+                print(f"[Scraper] Detected results page already loaded, skipping input.", file=sys.stderr)
+            else:
+                print(f"[Scraper] Typing query: {query}", file=sys.stderr)
+                search_input.click()
+                page.actions.key_down('CONTROL').key_down('a').key_up('a').key_up('CONTROL').key_down('BACKSPACE').key_up('BACKSPACE')
+                time.sleep(random.uniform(0.3, 0.7))
+                
+                for char in query:
+                    search_input.input(char)
+                    time.sleep(random.uniform(0.04, 0.12))
+                
+                time.sleep(random.uniform(1.0, 2.0))
+                
+                # Submission
+                print(f"[Scraper] Submitting search...", file=sys.stderr)
+                search_input.input('\n')
+                
+                # Wait and check if we need backup methods
+                time.sleep(1.5)
+                if 'search' not in page.url.lower():
+                    print(f"[Scraper] Submission failed, trying fallback click/JS...", file=sys.stderr)
+                    # Try JS as a final resort
+                    page.run_js("document.querySelector('.shopee-searchbar__search-button')?.click();")
+                    # Clear and set value via JS to be ultra sure
+                    page.run_js(f"const inp = document.querySelector('.shopee-searchbar-input__input'); if(inp) {{ inp.value = '{query}'; inp.dispatchEvent(new Event('input', {{ bubbles: true }})); }}")
+                    page.run_js("document.querySelector('.shopee-searchbar-input__input')?.closest('form')?.submit();")
+        else:
+            print(f"[Scraper] Search bar not found, navigating directly...", file=sys.stderr)
+            page.get(f"https://shopee.vn/search?keyword={query.replace(' ', '%20')}")
+
+        # --- CAPTCHA CHECK & RECOVERY ---
+        def handle_captcha(p):
+            title = p.title.lower()
+            html = p.html.lower()
+            # Look for common block keywords
+            if any(k in title for k in ['captcha', 'verify', 'robot']) or \
+               any(k in html for k in ['recaptcha', 'g-recaptcha', 'verification-wrapper', 'm-captcha']):
+                
+                print(f"\n[Scraper] !!! CAPTCHA/BLOCK DETECTED !!!", file=sys.stderr)
+                print(f"[Scraper] Please look at the browser window and solve it manually.", file=sys.stderr)
+                print(f"[Scraper] Waiting up to 120 seconds for manual resolution...", file=sys.stderr)
+                
+                # Wait until the keywords disappear from title and html
+                for _ in range(120):
+                    time.sleep(1)
+                    t_now, h_now = p.title.lower(), p.html.lower()
+                    if not any(k in t_now for k in ['captcha', 'verify', 'robot']) and \
+                       'captcha' not in h_now and 'verification-wrapper' not in h_now:
+                        print(f"[Scraper] Block cleared! Resuming...", file=sys.stderr)
+                        time.sleep(2) # Extra buffer
+                        return True
+                return False
+            return True
+
+        if not handle_captcha(page):
+            print(f"[Scraper] ERROR: CAPTCHA not solved in time.", file=sys.stderr)
+            sys.exit(1) # Exit with error code
+
+        results: List[Dict] = []
+        seen_keys = set()
+        
+        for page_idx in range(max_pages):
+            # Check for Captcha/Block at start of each page
+            if not handle_captcha(page):
                 break
 
             if not _wait_for_items(page):
@@ -260,12 +394,12 @@ def search_shopee(query: str, max_items: int = 100) -> List[Dict]:
                     break
                 continue
 
-            # Smaller human-like delay
-            time.sleep(random.uniform(0.8, 1.5))
+            # Human-like browsing of results
+            _human_scroll(page, steps=random.randint(4, 7))
+            _random_mouse_behavior(page)
             
-            _scroll_page(page)
             # Short wait for any images/lazy loads after scroll
-            time.sleep(1.0)
+            time.sleep(random.uniform(1.0, 2.0))
             
             items = page.eles(ITEM_LOCATOR)
             print(f"[Scraper] Found {len(items)} DOM items on page {page_idx + 1}", file=sys.stderr)
@@ -291,12 +425,28 @@ def search_shopee(query: str, max_items: int = 100) -> List[Dict]:
             # Delay between pages
             time.sleep(random.uniform(1.0, 2.5))
 
+        if not results:
+            print(f"[Scraper] No results found for \"{query}\".", file=sys.stderr)
+            # If we reached here without errors but found nothing, it's a valid empty result.
+            # But let's check if we are actually on a results page.
+            if 'search' not in page.url.lower():
+                print(f"[Scraper] ERROR: Ended up on wrong page ({page.url})", file=sys.stderr)
+                sys.exit(1)
+
         return results[:max_items]
     except Exception as err:
         print(f"General Scraper Error: {err}", file=sys.stderr)
         return []
     finally:
-        page.quit()
+        if page:
+            # We DON'T call page.quit() anymore to keep the browser alive on port 9222.
+            # We just close the current tab or stop loading to keep things tidy.
+            try:
+                page.stop_loading()
+            except:
+                pass
+            print(f"[Scraper] Finished task. Browser session kept alive.", file=sys.stderr)
+    return []
 
 
 def _parse_cli_max_items(argv: List[str]) -> int:

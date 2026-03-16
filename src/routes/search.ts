@@ -281,10 +281,11 @@ router.get('/search/catalog', async (req: Request, res: Response) => {
     }
 
     const maxItems = parseInt(req.query.maxItems as string || '60', 10);
-    console.log(`[Catalog Search] Query: "${q}" (maxItems=${maxItems})`);
+    const forceRefresh = req.query.refresh === 'true';
+    console.log(`[Catalog Search] Query: "${q}" (maxItems=${maxItems}, forceRefresh=${forceRefresh})`);
 
     try {
-        const result = await catalogSearch(q, maxItems);
+        const result = await catalogSearch(q, maxItems, forceRefresh);
 
         // Flatten variants+listings into a unified response with deal intelligence
         interface FlatListing extends Listing {

@@ -19,6 +19,7 @@ const MIGRATION_FILES = [
     '007_optimize_listings_index.sql',
     '008_click_tracking.sql',
     '009_hot_deals.sql',
+    '010_search_logs.sql',
 ];
 
 function extractSection(sql: string, section: 'UP' | 'DOWN'): string {

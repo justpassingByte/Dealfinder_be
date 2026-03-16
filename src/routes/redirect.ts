@@ -8,6 +8,43 @@ import { optionalAuth } from '../middleware/authMiddleware';
 const router = Router();
 
 /**
+ * Helper to wrap a raw product URL with Shopee affiliate tracking.
+ */
+function buildAffiliateUrl(rawUrl: string, subId?: string | null): string {
+    const affiliateId = config.shopee.affiliateId;
+    console.log(`[Affiliate] Building link for: ${rawUrl}`);
+    console.log(`[Affiliate] Using ID: ${affiliateId}`);
+    
+    if (!affiliateId) {
+        console.warn('[Affiliate] SHOPEE_AFFILIATE_ID is missing in .env!');
+        return rawUrl;
+    }
+
+    try {
+        // Step 1: Base landing page (rawUrl)
+        // Step 2: Encode the landing page
+        const encodedUrl = encodeURIComponent(rawUrl);
+
+        // Step 3 & 4: Build the final redirection link
+        // Format: https://s.shopee.vn/an_redir?origin_link=[ENCODED_URL]&affiliate_id=[ID]&sub_id=[SUB]
+        let finalUrl = `https://s.shopee.vn/an_redir?origin_link=${encodedUrl}&affiliate_id=${affiliateId}`;
+
+        if (subId) {
+            // Clean up subId to match standard (max 5 values separated by dash, but here we just pass one)
+            // Ensure no characters like spaces or special symbols break it
+            const cleanSubId = subId.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 100);
+            finalUrl += `&sub_id=${cleanSubId}`;
+        }
+
+        console.log(`[Affiliate] Generated URL: ${finalUrl}`);
+        return finalUrl;
+    } catch (err) {
+        console.error('[Affiliate] Error building Short-link:', err);
+        return rawUrl;
+    }
+}
+
+/**
  * GET /api/redirect
  * Legacy redirect — Logs a click and redirects to the affiliate URL.
  * query params: url (required), ref (optional referral code)
@@ -49,7 +86,8 @@ router.get('/redirect', optionalAuth, async (req: Request, res: Response) => {
     });
 
     // Build affiliate URL and 302 redirect
-    const affiliateUrl = `${config.affiliateBaseUrl}${encodeURIComponent(productUrl)}`;
+    const affiliateUrl = buildAffiliateUrl(productUrl, refCode);
+    console.log(`[Redirect] Redirecting to: ${affiliateUrl}`);
     res.redirect(302, affiliateUrl);
 });
 
@@ -76,8 +114,9 @@ router.get('/redirect/:listingId', async (req: Request, res: Response) => {
             console.error('[Redirect] Failed to log click event:', err);
         });
 
-        // 302 redirect to the product URL
-        res.redirect(302, listing.product_url);
+        // 302 redirect to the affiliate URL
+        const affiliateUrl = buildAffiliateUrl(listing.product_url, `listing_${listingId}`);
+        res.redirect(302, affiliateUrl);
     } catch (err) {
         console.error('[Redirect] Error:', err);
         res.status(500).json({ error: 'Internal server error.' });

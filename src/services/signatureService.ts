@@ -158,7 +158,8 @@ export interface SignatureResult {
 function normalizeTitle(title: string): string {
     return title
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
+        // Support Vietnamese characters and basic alphanumeric
+        .replace(/[^a-z0-9\sàáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
 }

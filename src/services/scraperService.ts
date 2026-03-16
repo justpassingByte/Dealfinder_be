@@ -21,7 +21,7 @@ function clampMaxItems(value?: number): number {
 async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Promise<Listing[]> {
     const safeMaxItems = clampMaxItems(maxItems);
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         const pythonScript = path.join(process.cwd(), 'scripts', 'shopee_scraper.py');
         const pythonProcess = spawn('python', [pythonScript, query, String(safeMaxItems)]);
 
@@ -43,14 +43,19 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Pr
         pythonProcess.on('close', (code) => {
             if (isBlocked) {
                 console.error(`[Scraper] CRITICAL: Scraper was blocked by Shopee security.`);
-            }
-
-            if (code !== 0 && !dataString) {
-                console.warn(`[Scraper] Python worker failed (code ${code}).`);
-                resolve([]);
+                reject(new Error('Scraper blocked by Shopee security (CAPTCHA).'));
                 return;
             }
-
+ 
+            if (code !== 0) {
+                console.warn(`[Scraper] Python worker failed (code ${code}).`);
+                // Check if we have some data anyway, but usually code != 0 means bad
+                if (!dataString) {
+                    reject(new Error(`Scraper failed with exit code ${code}`));
+                    return;
+                }
+            }
+ 
             try {
                 if (!dataString.trim()) {
                     console.warn(`[Scraper] Python worker returned empty output (query: "${query}").`);
@@ -68,8 +73,7 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Pr
                 resolve(listings);
             } catch (err) {
                 console.error('[Scraper] JSON parse error from Python output. First 200 chars:', dataString.substring(0, 200));
-                console.error('[Scraper] Error details:', err);
-                resolve([]);
+                reject(err);
             }
         });
     });

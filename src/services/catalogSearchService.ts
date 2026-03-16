@@ -44,18 +44,38 @@ export interface CatalogSearchResult {
 //  MAIN SEARCH FLOW
 // ═══════════════════════════════════════════════════════
 
-export async function catalogSearch(query: string, maxItems = 60): Promise<CatalogSearchResult> {
+export async function catalogSearch(
+    query: string, 
+    maxItems = 60, 
+    forceRefresh = false
+): Promise<CatalogSearchResult> {
     const normalizedQuery = query.toLowerCase().trim();
     const signatures = generateSignatures(normalizedQuery);
 
+    // Log the search query for real-time trends
+    await catalog.logSearchQuery(normalizedQuery).catch(err => {
+        console.error('[Catalog] Failed to log search query:', err);
+    });
+
     // ── Step 0: Redis Cache ────────────────────────────
-    const cachedRaw = await redis.get(cacheKey.search(normalizedQuery));
-    if (cachedRaw) {
-        try {
-            const cached = JSON.parse(cachedRaw) as CatalogSearchResult;
-            console.log(`[Catalog] Cache hit for "${normalizedQuery}"`);
-            return { ...cached, source: 'cache' };
-        } catch { /* ignore parse errors, proceed */ }
+    if (forceRefresh) {
+        console.log(`[Catalog] Force refresh requested for "${normalizedQuery}". Clearing cache...`);
+        await redis.del(cacheKey.search(normalizedQuery));
+    } else {
+        const cachedRaw = await redis.get(cacheKey.search(normalizedQuery));
+        if (cachedRaw) {
+            try {
+                const cached = JSON.parse(cachedRaw) as CatalogSearchResult;
+                console.log(`[Catalog] Redis CACHE HIT for "${normalizedQuery}"`);
+                
+                // Buffer popularity increment even on cache hit!
+                if (cached.product?.id) {
+                    await redis.incr(cacheKey.searchCount(cached.product.id));
+                }
+                
+                return { ...cached, source: 'cache' };
+            } catch { /* ignore parse errors, proceed */ }
+        }
     }
 
     // ── Step 1: Exact Signature Lookup ─────────────────
@@ -72,8 +92,8 @@ export async function catalogSearch(query: string, maxItems = 60): Promise<Catal
     }
 
     // ── Fresh data? Return from DB ─────────────────────
-    if (product && catalog.isProductFresh(product)) {
-        console.log(`[Catalog] DB hit (fresh) for "${normalizedQuery}" → ${product.product_signature}`);
+    if (!forceRefresh && product && catalog.isProductFresh(product)) {
+        console.log(`[Catalog] DATABASE HIT (fresh) for "${normalizedQuery}" [ID: ${product.id}]`);
         const result = await buildProductResponse(product, 'db');
 
         // Buffer popularity increment
@@ -109,13 +129,31 @@ export async function catalogSearch(query: string, maxItems = 60): Promise<Catal
 
     try {
         console.log(`[Catalog] Scraping for "${normalizedQuery}"...`);
-        const rawListings = await scrapeListings(normalizedQuery, 'shopee', maxItems);
+        let rawListings: Listing[] = [];
 
-        if (rawListings.length === 0 && product) {
-            // Scraper returned empty; serve stale data
-            console.warn(`[Catalog] Scraper empty, serving stale for "${normalizedQuery}"`);
-            await catalog.markProductRefreshPending(product.id);
-            return buildProductResponse(product, 'stale-fallback');
+        try {
+            rawListings = await scrapeListings(normalizedQuery, 'shopee', maxItems);
+        } catch (err) {
+            console.error(`[Catalog] Scraper EXCEPTION for "${normalizedQuery}":`, err);
+            if (product) {
+                console.log(`[Catalog] Serving stale data after scraper failure.`);
+                return buildProductResponse(product, 'stale-fallback');
+            }
+            throw err;
+        }
+
+        if (rawListings.length === 0) {
+            if (product) {
+                console.warn(`[Catalog] Scraper returned 0 items; marking refresh-pending for "${normalizedQuery}"`);
+                await catalog.markProductRefreshPending(product.id);
+                return buildProductResponse(product, 'stale-fallback');
+            }
+            console.warn(`[Catalog] Scraper returned 0 items for new product "${normalizedQuery}". Not persisting.`);
+            return {
+                source: 'scraper',
+                product: null,
+                variants: [],
+            };
         }
 
         // Persist scraped data into catalog
@@ -220,8 +258,10 @@ async function persistScrapedData(
         }
     }
 
-    // 4. Mark product as freshly scraped
-    await catalog.markProductScraped(product.id);
+    // 4. Mark product as freshly scraped (ONLY if we actually got items)
+    if (rawListings.length > 0) {
+        await catalog.markProductScraped(product.id);
+    }
 
     return product;
 }
