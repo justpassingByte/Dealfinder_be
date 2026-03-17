@@ -1,12 +1,80 @@
+version: "3.8"
+
 services:
+  # Redis Database
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    restart: always
-    command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
+    restart: always
+
+  # API Server Backend (Chính folder này)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - USE_REDIS_MOCK=false
+      - NODE_ENV=production
+    ports:
+      - "4000:4000"
+      - "9222:9222" # Port để giải CAPTCHA từ xa
+    depends_on:
+      - redis
+    restart: always
+
+  # Scraper Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npm run start:worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - USE_REDIS_MOCK=false
+      - NODE_ENV=production
+    depends_on:
+      - redis
+    restart: always
+
+  # Frontend Web App (Tìm folder frontend ở bên cạnh)
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${PRODUCTION_URL:-https://yourdomain.com}
+    environment:
+      - NEXT_PUBLIC_INTERNAL_API_URL=http://backend:4000
+    restart: always
+    depends_on:
+      - backend
+
+  # Web Server (Reverse Proxy + Auto SSL)
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN_NAME=${PRODUCTION_DOMAIN:-yourdomain.com}
+    depends_on:
+      - frontend
+      - backend
 
 volumes:
+  caddy_data:
+  caddy_config:
   redis_data:
