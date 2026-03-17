@@ -65,10 +65,10 @@ export function compareListings(listings: Listing[]): ComparisonResult | null {
             (0.6 * normPrice + 0.2 * normRating + 0.2 * normSales).toFixed(4)
         );
 
-        // Deal detection — only flag if we have enough market data
-        const isDeal = listingsCount >= 4 && listing.price < medianPrice * 0.85;
+        // Deal detection — just flag the cheapest item as a deal for now
+        const isDeal = listingsCount >= 1 && listing.price === lowestPrice;
         const discountPercent = isDeal
-            ? Math.round(((medianPrice - listing.price) / medianPrice) * 100)
+            ? (medianPrice > listing.price ? Math.round(((medianPrice - listing.price) / medianPrice) * 100) : 5)
             : 0;
 
         return {

@@ -263,13 +263,66 @@ export class SearchPipelineService {
             });
     }
 
+    public filterByExactModelNumber(listings: Listing[], query: string): Listing[] {
+        const queryTokens = this.tokenize(query);
+        const titleRegex = /[a-z0-9]+/gi;
+        // Only consider tokens that have digits (acting as model numbers)
+        const modelNumbers = queryTokens.filter(t => /\d/.test(t));
+
+        if (modelNumbers.length === 0) return listings;
+
+        return listings.filter(listing => {
+            const normalizedTitle = this.normalizeTitle(listing.title);
+            const titleTokens = new Set(normalizedTitle.match(titleRegex) || []);
+            
+            // Allow if ALL query model numbers are exactly in the title tokens
+            return modelNumbers.every(num => titleTokens.has(num));
+        });
+    }
+
+    public filterByModelModifiers(listings: Listing[], query: string): Listing[] {
+        const queryTokens = new Set(this.tokenize(query));
+        const modelModifiers = ['pro', 'max', 'plus', 'ultra', 'mini', 'lite', 'fe', 'se'];
+        
+        const queryModifiers = new Set(modelModifiers.filter(mod => queryTokens.has(mod)));
+        
+        return listings.filter(listing => {
+            const titleTokens = new Set(this.tokenize(listing.title));
+            
+            // 1. Title has a modifier NOT in query (e.g. Title=17 Pro, Query=17) -> REJECT
+            const hasExtraModifier = modelModifiers.some(mod => titleTokens.has(mod) && !queryModifiers.has(mod));
+            if (hasExtraModifier) return false;
+            
+            // 2. Query has a modifier NOT in title (e.g. Query=17 Pro, Title=17) -> REJECT
+            const missingRequiredModifier = [...queryModifiers].some(mod => !titleTokens.has(mod));
+            if (missingRequiredModifier) return false;
+            
+            return true;
+        });
+    }
+
     public process(listings: Listing[], query: string, limit: number = this.config.maxResults): RankedListing[] {
         if (!listings || listings.length === 0) return [];
+        console.log(`[Pipeline] Initial items: ${listings.length}`);
 
-        const accessoryFiltered = this.filterAccessoryKeywords(listings, query);
-        const brandFiltered = this.filterByBrandMatch(accessoryFiltered, query);
-        const sanePriced = this.applyPriceSanityFilter(brandFiltered);
+        let currentListings = listings;
+        // Skipping filterAccessoryKeywords to avoid false positives on bundled items (e.g. "iPhone kèm sạc").
+        // PriceSanity and applyScoring (-5 penalty) correctly filter them out later.
+        
+        currentListings = this.filterByExactModelNumber(currentListings, query);
+        console.log(`[Pipeline] After ExactModelNumber: ${currentListings.length}`);
+        
+        currentListings = this.filterByModelModifiers(currentListings, query);
+        console.log(`[Pipeline] After ModelModifiers: ${currentListings.length}`);
+        
+        currentListings = this.filterByBrandMatch(currentListings, query);
+        console.log(`[Pipeline] After BrandMatch: ${currentListings.length}`);
+        
+        const sanePriced = this.applyPriceSanityFilter(currentListings);
+        console.log(`[Pipeline] After PriceSanity: ${sanePriced.length}`);
+        
         const scored = this.applyScoring(sanePriced, query);
+        console.log(`[Pipeline] After Scoring & Sort: ${scored.length}`);
 
         return scored.slice(0, Math.max(1, limit));
     }

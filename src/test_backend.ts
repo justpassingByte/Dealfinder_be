@@ -1,7 +1,7 @@
 import { scrapeListings } from './services/scraperService';
 
 async function testBackend() {
-    const query = "iphone 15";
+    const query = "iphone 16";
     console.log(`[Test] Starting backend test for query: "${query}"...`);
     console.log(`[Test] This might take 30-60 seconds due to stealth delays and fetching up to 80 items.`);
 

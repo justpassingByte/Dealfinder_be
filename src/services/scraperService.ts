@@ -89,7 +89,7 @@ export async function scrapeListings(query: string, marketplace?: string, maxIte
         return [];
     }
 
-    const filtered = searchPipelineService.process(rawListings, query, 10);
+    const filtered = searchPipelineService.process(rawListings, query, 40);
     if (filtered.length > 0) {
         return filtered;
     }
@@ -98,5 +98,5 @@ export async function scrapeListings(query: string, marketplace?: string, maxIte
     return rawListings
         .filter((listing) => listing.price > 0)
         .sort((a, b) => a.price - b.price)
-        .slice(0, 10);
+        .slice(0, 40);
 }

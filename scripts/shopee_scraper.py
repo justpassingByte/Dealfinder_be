@@ -308,7 +308,7 @@ def search_shopee(query: str, max_items: int = 100) -> List[Dict]:
 
         # --- SEARCH PHASE ---
         max_items = max(1, min(max_items, 120))
-        max_pages = 1
+        max_pages = (max_items // 60) + 1 if max_items > 60 else 1
         
         # Human way: type into search bar
         search_input = page.ele('css:.shopee-searchbar-input__input', timeout=5)

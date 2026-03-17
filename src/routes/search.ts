@@ -13,6 +13,7 @@ import { scrapeListings } from '../services/scraperService';
 import { compareListings } from '../services/compareService';
 import { detectDeals, DealAlert } from '../services/aiService';
 import { catalogSearch } from '../services/catalogSearchService';
+import { findProductsForAutocomplete } from '../services/catalogRepository';
 import { Listing } from '../types/listing';
 
 const router = Router();
@@ -105,6 +106,22 @@ async function fetchListingsForQuery(query: string, maxItems = 60): Promise<Sear
         return { ok: false, status: 504, payload: { error: 'Scraper timed out or failed. Please try again.' } };
     }
 }
+
+router.get('/search/autocomplete', async (req: Request, res: Response) => {
+    const q = (req.query.q as string | undefined)?.trim();
+    if (!q) {
+        res.json({ suggestions: [] });
+        return;
+    }
+    
+    try {
+        const products = await findProductsForAutocomplete(q, 8);
+        res.json({ suggestions: products });
+    } catch (err) {
+        console.error('[Autocomplete] Error:', err);
+        res.status(500).json({ error: 'Autocomplete failed.' });
+    }
+});
 
 router.get('/search', async (req: Request, res: Response) => {
     const q = (req.query.q as string | undefined)?.trim();

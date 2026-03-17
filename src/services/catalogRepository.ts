@@ -51,6 +51,27 @@ export async function findProductsBySimilarity(
 }
 
 /**
+ * Autocomplete prefix / similarity search.
+ */
+export async function findProductsForAutocomplete(
+    query: string,
+    limit = 5
+): Promise<string[]> {
+    const { rows } = await db.query(
+        `SELECT DISTINCT normalized_name, 
+                CASE WHEN normalized_name ILIKE $1 THEN 1 ELSE 0 END as is_prefix,
+                similarity(normalized_name, $2) as sim_score
+         FROM products 
+         WHERE normalized_name ILIKE $1 
+            OR similarity(normalized_name, $2) >= 0.15
+         ORDER BY is_prefix DESC, sim_score DESC
+         LIMIT $3`,
+        [`${query}%`, query, limit]
+    );
+    return rows.map(r => r.normalized_name);
+}
+
+/**
  * Create a new product (Auto-Discovery = Step 3).
  */
 export async function createProduct(data: {
@@ -430,7 +451,7 @@ export async function getHotDeals(limit = 12): Promise<any[]> {
             l.marketplace,
             v.storage,
             v.color,
-            p.normalized_name as "productName"
+            v.normalized_variant_name as "productName"
          FROM listings l
          JOIN product_variants v ON v.id = l.variant_id
          JOIN products p ON p.id = v.product_id

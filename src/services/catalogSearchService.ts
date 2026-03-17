@@ -87,7 +87,16 @@ export async function catalogSearch(
             normalizedQuery, SIMILARITY_THRESHOLD, 1
         );
         if (similar.length > 0 && similar[0].similarity_score >= SIMILARITY_AUTO_CREATE) {
-            product = similar[0];
+            // Fallback safety: Do not merge completely different product generations
+            // e.g. "iphone 16" and "iphone 17" have high similarity but different numbers
+            const queryNumbers = normalizedQuery.match(/\d+/g)?.join('_');
+            const matchNumbers = similar[0].normalized_name.match(/\d+/g)?.join('_');
+            
+            if (queryNumbers === matchNumbers) {
+                product = similar[0];
+            } else {
+                console.log(`[Catalog] Rejected similarity due to numeric mismatch: "${normalizedQuery}" vs "${similar[0].normalized_name}"`);
+            }
         }
     }
 
@@ -210,13 +219,23 @@ async function persistScrapedData(
             model: signatures.model,
         });
 
-    // 2. Pre-calculate deal status using compareListings logic
-    const comparison = compareListings(rawListings);
+    // 2. Pre-calculate deal status per variant using compareListings logic
+    const variantGroups = new Map<string, Listing[]>();
+    for (const raw of rawListings) {
+        const sigs = generateSignatures(raw.title);
+        const vSig = sigs.variantSignature;
+        if (!variantGroups.has(vSig)) variantGroups.set(vSig, []);
+        variantGroups.get(vSig)!.push(raw);
+    }
+
     const rankedMap = new Map<string, any>();
-    if (comparison) {
-        comparison.sellerList.forEach(r => {
-            rankedMap.set(r.url, { isDeal: r.isDeal, discountPercent: r.discountPercent });
-        });
+    for (const [vSig, groupListings] of variantGroups.entries()) {
+        const comparison = compareListings(groupListings);
+        if (comparison) {
+            comparison.sellerList.forEach(r => {
+                rankedMap.set(r.url, { isDeal: r.isDeal, discountPercent: r.discountPercent });
+            });
+        }
     }
 
     // 3. Process each listing
@@ -352,9 +371,9 @@ async function buildProductResponse(
             listing.score = parseFloat((0.6 * normPrice + 0.2 * normRating + 0.2 * normSales).toFixed(4));
 
             // Deal detection
-            listing.isDeal = count >= 4 && listing.price < medianPrice * 0.85;
+            listing.isDeal = count >= 1 && listing.price === lowestPrice;
             listing.discountPercent = listing.isDeal
-                ? Math.round(((medianPrice - listing.price) / medianPrice) * 100)
+                ? (medianPrice > listing.price ? Math.round(((medianPrice - listing.price) / medianPrice) * 100) : 5)
                 : 0;
             listing.medianPrice = medianPrice;
             listing.lowestPrice = lowestPrice;
