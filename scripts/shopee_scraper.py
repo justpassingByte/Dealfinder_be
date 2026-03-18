@@ -263,36 +263,14 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
     ua = get_consistent_ua(profile_path)
 
     co = ChromiumOptions()
-    co.set_argument('--no-sandbox')
-    co.set_argument('--disable-gpu')
-    co.set_argument('--disable-dev-shm-usage')
     
-    # ------ RAM OPTIMIZATIONS FOR 2GB VPS ------
-    # Tắt tính năng không cần thiết để tiết kiệm RAM tối đa
-    co.set_argument('--mute-audio')
-    co.set_argument('--disable-background-networking') # Ngăn Chrome tải background data
-    co.set_argument('--disable-default-apps')
-    co.set_argument('--disable-extensions')
-    co.set_argument('--disable-sync')
-    co.set_argument('--disable-translate')
-    co.set_argument('--metrics-recording-only')
-    co.set_argument('--no-first-run')
-    co.set_argument('--safebrowsing-disable-auto-update')
-    co.set_argument('--disable-plugins')
-    co.set_argument('--disable-image-animation') # Giữ ảnh tĩnh, chặn render ảnh động/GIF nặng
-    co.set_argument('--disk-cache-size=33554432') # Giới hạn cache cứng ở mốc 32MB
-    
-    co.set_user_agent(ua)
-    co.set_user_data_path(profile_path)
-    # LUÔN dùng set_address() để kết nối qua CDP protocol
-    # set_local_port() sẽ cố tìm Chrome process trong cùng container → THẤT BẠI trong Docker
-    # set_address() gọi thẳng qua mạng → THÀNH CÔNG dù Chrome ở container khác
+    # Kiểm tra xem có kết nối tới Chrome đang chạy sẵn không (Docker mode)
     browser_host = os.environ.get('SCRAPER_BROWSER_HOST', '127.0.0.1')
     browser_port = int(os.environ.get('SCRAPER_BROWSER_PORT', '9222'))
-    co.set_address(f"{browser_host}:{browser_port}")
     
-    # Images ON is safer for anti-bot detection.
-    co.set_argument('--blink-settings=imagesEnabled=true') 
+    # Nếu kết nối tới Chrome ĐÃ CHẠY SẴN → CHỈ set address, KHÔNG set arguments
+    # Vì DrissionPage sẽ RESTART Chrome nếu thấy arguments khác với Chrome đang chạy!
+    co.set_address(f"{browser_host}:{browser_port}")
 
     try:
         browser = ChromiumPage(co)
