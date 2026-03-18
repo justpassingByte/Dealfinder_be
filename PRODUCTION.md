@@ -69,5 +69,5 @@ Kiến trúc mới nhất:
 2. Chọn **Add New Project**, cấp phép hiển thị repo và import thư mục React/NextJS Frontend của bạn.
 3. Trong giao diện chuẩn bị cấu hình (mục **Environment Variables**), khai báo gốc rễ API vào VPS:
    - Tên biến: `NEXT_PUBLIC_API_URL`
-   - Giá trị: `https://api.ten_mien_cua_ban.com/api` (Nhập đúng định dạng `URL VPS ở Bước 4` kèm theo đuôi `/api`).
+   - Giá trị: `https://api.ten_mien_cua_ban.com` (Tuyệt đối **KHÔNG CÓ** chữ `/api` phía sau nhé, vì code đã tự nối `/api` vào URL rồi).
 4. Click nút **Deploy** và nhấm nháp ly cà phê. Vercel sẽ tự động build front-end, rải nội dung khắp thế giới và chỏ ngược mọi lời gọi API data về VPS cào deal của bạn!
