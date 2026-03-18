@@ -264,13 +264,13 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
 
     co = ChromiumOptions()
     
-    # Kiểm tra xem có kết nối tới Chrome đang chạy sẵn không (Docker mode)
+    # Kết nối tới Chrome đang chạy sẵn (Docker mode)
     browser_host = os.environ.get('SCRAPER_BROWSER_HOST', '127.0.0.1')
     browser_port = int(os.environ.get('SCRAPER_BROWSER_PORT', '9222'))
-    
-    # Nếu kết nối tới Chrome ĐÃ CHẠY SẴN → CHỈ set address, KHÔNG set arguments
-    # Vì DrissionPage sẽ RESTART Chrome nếu thấy arguments khác với Chrome đang chạy!
     co.set_address(f"{browser_host}:{browser_port}")
+    
+    # BẮT BUỘC: Giả lập User-Agent Windows để Shopee không nhận ra Bot
+    co.set_user_agent(ua)
 
     try:
         browser = ChromiumPage(co)
