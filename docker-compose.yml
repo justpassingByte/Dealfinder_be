@@ -61,7 +61,7 @@ services:
       - USE_REDIS_MOCK=false
       - NODE_ENV=production
       - SCRAPER_BROWSER_HOST=worker
-      - SCRAPER_BROWSER_PORT=9222
+      - SCRAPER_BROWSER_PORT=9223
     ports:
       - "4000:4000"
     volumes:
