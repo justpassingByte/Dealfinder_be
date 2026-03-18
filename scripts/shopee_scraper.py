@@ -320,9 +320,14 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             if search_input:
                 search_input.click()
                 time.sleep(random.uniform(0.8, 1.5))
-                page.actions.key_down('CONTROL').key_down('a').key_up('a').key_up('CONTROL')
-                time.sleep(0.3)
-                page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
+                # Xóa nội dung cũ trong thanh search một cách triệt để
+                try:
+                    search_input.clear()
+                except:
+                    # Fallback: thủ công nếu clear() không thành công
+                    page.actions.key_down('CONTROL').key_down('a').key_up('a').key_up('CONTROL')
+                    page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
+                
                 time.sleep(random.uniform(0.3, 0.6))
                 for char in query:
                     search_input.input(char)
