@@ -51,7 +51,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: bash -c "python3 /app/proxy.py & npm run start:worker"
+    # LỆNH TỰ ĐỘNG BẺ KHÓA + BẬT MÁY + BẬT BOT
+    command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-port=9222 --no-sandbox --disable-gpu --disable-dev-shm-usage --user-data-dir=/app/shopee_user_profile & python3 /app/proxy.py & npm run start:worker"
     env_file:
       - .env
     environment:
