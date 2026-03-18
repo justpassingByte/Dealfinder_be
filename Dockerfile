@@ -37,6 +37,9 @@ RUN npm install --omit=dev
 
 # Copy scripts and profiles
 COPY --from=builder /app/scripts ./scripts
+# Copy sql migrations because tsc doesn't copy them
+COPY --from=builder /app/src/migrations ./dist/src/migrations
+COPY --from=builder /app/migrations ./dist/migrations
 # Ensure the shopee_user_profile directory exists or is copied
 COPY --from=builder /app/shopee_user_profile ./shopee_user_profile
 
