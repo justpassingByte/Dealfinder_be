@@ -23,11 +23,12 @@ services:
       - redis_data:/data
     restart: always
 
-  # API Server Backend
-  backend:
+  # Scraper Worker (CHỦ NHÀ - sở hữu Chrome + Proxy + Mạng)
+  worker:
     build:
       context: .
       dockerfile: Dockerfile
+    command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-gpu --disable-dev-shm-usage --user-data-dir=/app/shopee_user_profile & python3 /app/proxy.py & npm run start:worker"
     env_file:
       - .env
     environment:
@@ -35,26 +36,27 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
       - USE_REDIS_MOCK=false
       - NODE_ENV=production
-      - SCRAPER_BROWSER_HOST=worker
-      - SCRAPER_BROWSER_PORT=9223
     ports:
-      - "4000:4000"
+      - "4000:4000"   # API port (backend chạy chung mạng nên mở ở đây)
+      - "9222:9222"   # Chrome DevTools (Internal)
+      - "9223:9223"   # Proxy cho SSH Inspect từ Windows
     volumes:
       - shopee_profile:/app/shopee_user_profile
+      - ./proxy.py:/app/proxy.py
     depends_on:
       - redis
       - postgres
     restart: always
 
-  # Scraper Worker
-  worker:
+  # API Server Backend (KHÁCH - ở nhờ mạng của Worker)
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
-    # LỆNH TỰ ĐỘNG BẺ KHÓA + BẬT MÁY + BẬT BOT
-    command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-port=9222 --no-sandbox --disable-gpu --disable-dev-shm-usage --user-data-dir=/app/shopee_user_profile & python3 /app/proxy.py & npm run start:worker"
     env_file:
       - .env
+    # CHIÊU CUỐI: Dùng chung mạng với worker → 127.0.0.1:9222 = Chrome
+    network_mode: "service:worker"
     environment:
       - REDIS_HOST=redis
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
@@ -62,15 +64,10 @@ services:
       - NODE_ENV=production
       - SCRAPER_BROWSER_HOST=127.0.0.1
       - SCRAPER_BROWSER_PORT=9222
-    ports:
-      - "9222:9222" # Debugging port (Internal)
-      - "9223:9223" # Visual Monitoring Proxy (External)
     volumes:
       - shopee_profile:/app/shopee_user_profile
-      - ./proxy.py:/app/proxy.py
     depends_on:
-      - redis
-      - postgres
+      - worker
     restart: always
 
   # Web Server (Reverse Proxy + Auto SSL)
@@ -87,7 +84,7 @@ services:
     environment:
       - DOMAIN_NAME=${PRODUCTION_DOMAIN:-yourdomain.com}
     depends_on:
-      - backend
+      - worker
 
 volumes:
   caddy_data:
