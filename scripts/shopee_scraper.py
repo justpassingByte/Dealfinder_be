@@ -284,8 +284,14 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
     
     co.set_user_agent(ua)
     co.set_user_data_path(profile_path)
-    # Set a fixed port to allow multiple script runs to connect to the same browser instance
-    co.set_local_port(9222)
+    # Remote browser support for Docker networking
+    browser_host = os.environ.get('SCRAPER_BROWSER_HOST', '127.0.0.1')
+    browser_port = int(os.environ.get('SCRAPER_BROWSER_PORT', '9222'))
+    
+    if browser_host != '127.0.0.1':
+        co.set_address(f"{browser_host}:{browser_port}")
+    else:
+        co.set_local_port(browser_port)
     
     # Images ON is safer for anti-bot detection.
     co.set_argument('--blink-settings=imagesEnabled=true') 

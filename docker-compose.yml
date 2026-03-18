@@ -35,6 +35,8 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
       - USE_REDIS_MOCK=false
       - NODE_ENV=production
+      - SCRAPER_BROWSER_HOST=worker
+      - SCRAPER_BROWSER_PORT=9223
     ports:
       - "4000:4000"
     volumes:
@@ -49,7 +51,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: npm run start:worker
+    command: bash -c "python3 /app/proxy.py & npm run start:worker"
     env_file:
       - .env
     environment:
@@ -57,10 +59,14 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
       - USE_REDIS_MOCK=false
       - NODE_ENV=production
+      - SCRAPER_BROWSER_HOST=127.0.0.1
+      - SCRAPER_BROWSER_PORT=9222
     ports:
-      - "9222:9222" # Port để giải CAPTCHA từ xa do Chromium cài trên worker
+      - "9222:9222" # Debugging port (Internal)
+      - "9223:9223" # Visual Monitoring Proxy (External)
     volumes:
       - shopee_profile:/app/shopee_user_profile
+      - ./proxy.py:/app/proxy.py
     depends_on:
       - redis
       - postgres
