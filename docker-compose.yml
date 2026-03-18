@@ -28,8 +28,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # Chrome mở cửa 0.0.0.0 cho toàn mạng Docker, không cần network_mode
-    command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-gpu --disable-dev-shm-usage --user-data-dir=/app/shopee_user_profile & python3 /app/proxy.py & npm run start:worker"
+    # Chrome: Anti-detection + HD + Mở cửa mạng Docker
+    command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1920,1080 --disable-blink-features=AutomationControlled --user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' --user-data-dir=/app/shopee_user_profile & python3 /app/proxy.py & npm run start:worker"
     env_file:
       - .env
     environment:
