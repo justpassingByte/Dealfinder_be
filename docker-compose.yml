@@ -37,7 +37,8 @@ services:
       - NODE_ENV=production
     ports:
       - "4000:4000"
-      - "9222:9222" # Port để giải CAPTCHA từ xa do Chromium lộ
+    volumes:
+      - shopee_profile:/app/shopee_user_profile
     depends_on:
       - redis
       - postgres
@@ -56,6 +57,10 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
       - USE_REDIS_MOCK=false
       - NODE_ENV=production
+    ports:
+      - "9222:9222" # Port để giải CAPTCHA từ xa do Chromium cài trên worker
+    volumes:
+      - shopee_profile:/app/shopee_user_profile
     depends_on:
       - redis
       - postgres
@@ -82,3 +87,4 @@ volumes:
   caddy_config:
   redis_data:
   postgres_data:
+  shopee_profile:
