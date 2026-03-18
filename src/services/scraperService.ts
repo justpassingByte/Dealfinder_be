@@ -18,12 +18,23 @@ function clampMaxItems(value?: number): number {
     return Math.max(1, Math.min(value, MAX_ALLOWED_ITEMS));
 }
 
-async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Promise<Listing[]> {
+async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS, isMaintenance = false): Promise<Listing[]> {
     const safeMaxItems = clampMaxItems(maxItems);
 
     return new Promise((resolve, reject) => {
         const pythonScript = path.join(process.cwd(), 'scripts', 'shopee_scraper.py');
-        const pythonProcess = spawn('python', [pythonScript, query, String(safeMaxItems)]);
+        const pythonProcess = spawn('python', [pythonScript, query, String(safeMaxItems), isMaintenance ? "maintenance" : "user"]);
+
+        // Tối ưu: Đặt timeout bảo vệ chống treo (Zombie process ngốn RAM VPS)
+        const timeoutId = setTimeout(() => {
+            pythonProcess.kill('SIGTERM');
+            reject(new Error(`Scraper process timed out for query: "${query}"`));
+        }, 180000); // 3 phút
+
+        pythonProcess.on('error', (err) => {
+            clearTimeout(timeoutId);
+            reject(err);
+        });
 
         let dataString = '';
         let isBlocked = false;
@@ -41,6 +52,8 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Pr
         });
 
         pythonProcess.on('close', (code) => {
+            clearTimeout(timeoutId);
+
             if (isBlocked) {
                 console.error(`[Scraper] CRITICAL: Scraper was blocked by Shopee security.`);
                 reject(new Error('Scraper blocked by Shopee security (CAPTCHA).'));
@@ -79,14 +92,19 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS): Pr
     });
 }
 
-export async function scrapeListings(query: string, marketplace?: string, maxItems = DEFAULT_MAX_ITEMS): Promise<Listing[]> {
+export async function scrapeListings(query: string, marketplace?: string, maxItems = DEFAULT_MAX_ITEMS, isMaintenance = false): Promise<Listing[]> {
     if (marketplace && marketplace !== 'shopee') {
         return [];
     }
 
-    const rawListings = await runPythonScraper(query, maxItems);
+    const rawListings = await runPythonScraper(query, maxItems, isMaintenance);
     if (rawListings.length === 0) {
         return [];
+    }
+
+    // Direct URL scrapes don't need relevance filtering - we already know it's the right product.
+    if (query.toLowerCase().startsWith('http')) {
+        return rawListings.filter(l => l.price > 0);
     }
 
     const filtered = searchPipelineService.process(rawListings, query, 40);

@@ -69,27 +69,41 @@ export async function runMaintenanceCycle(): Promise<void> {
 }
 
 // ── Top Product Refresh ────────────────────────────────
-/**
- * Refresh the top N most-searched products by triggering a background scrape.
- */
 export async function refreshTopProducts(limit = 20): Promise<void> {
-    console.log(`[Maintenance] Refreshing top ${limit} products...`);
+    console.log(`[Maintenance] Starting human-paced refresh for top ${limit} products...`);
 
     const topProducts = await catalog.getTopProducts(limit);
     let refreshed = 0;
 
     for (const product of topProducts) {
+        // Only refresh if data is actually stale
         if (!catalog.isProductFresh(product)) {
             try {
-                // Trigger a catalog search which will automatically scrape and persist
-                await catalogSearch(product.normalized_name, 60);
-                refreshed++;
-                console.log(`[Maintenance] Refreshed: ${product.product_signature}`);
+                // Find the "best" listing URL to refresh directly (cheapest/most active)
+                const data = await catalog.getVariantsWithListings(product.id);
+                const bestListing = data.find(l => l.listing_id && l.listing_status === 'active');
+
+                if (bestListing?.product_url) {
+                    console.log(`[Maintenance] Refreshing via URL: ${product.normalized_name}`);
+                    // Use the URL Mode for faster, stealthier updates
+                    await catalogSearch(bestListing.product_url, 1, true, true);
+                    refreshed++;
+                } else {
+                    // Fallback to name search if no URL exists
+                    await catalogSearch(product.normalized_name, 30, true, true);
+                    refreshed++;
+                }
+
+                // HUMAN DELAY: Wait 15-45 seconds between products to avoid detection
+                const delay = 15000 + Math.random() * 30000;
+                console.log(`[Maintenance] Sleeping for ${Math.round(delay/1000)}s to look human...`);
+                await new Promise(r => setTimeout(r, delay));
+
             } catch (err) {
-                console.error(`[Maintenance] Failed to refresh ${product.product_signature}:`, err);
+                console.error(`[Maintenance] Failed to refresh ${product.normalized_name}:`, err);
             }
         }
     }
 
-    console.log(`[Maintenance] Refreshed ${refreshed}/${topProducts.length} products.`);
+    console.log(`[Maintenance] Cycle finished. Refreshed ${refreshed} products.`);
 }

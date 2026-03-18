@@ -1,12 +1,5 @@
 # Caddy configuration
 {$DOMAIN_NAME} {
-    # Chuyển hướng các request bắt đầu bằng /api/ xuống Backend
-    handle /api/* {
-        reverse_proxy backend:4000
-    }
-
-    # Các request còn lại chuyển về Frontend (Next.js)
-    handle {
-        reverse_proxy frontend:3000
-    }
+    # Tất cả request trên VPS đều trỏ về API Backend do Frontend đã đưa lên Vercel
+    reverse_proxy backend:4000
 }

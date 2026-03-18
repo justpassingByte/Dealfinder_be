@@ -26,6 +26,7 @@ const cacheKey = {
     product: (id: string) => `df:product:${id}`,
     variantListings: (vid: string) => `df:variant:${vid}:listings`,
     scrapeLock: (sig: string) => `df:scrape_lock:${sig}`,
+    globalBrowserLock: () => 'df:global_browser_lock',
     searchCount: (pid: string) => `df:search_count:${pid}`,
 };
 
@@ -45,17 +46,20 @@ export interface CatalogSearchResult {
 // ═══════════════════════════════════════════════════════
 
 export async function catalogSearch(
-    query: string, 
-    maxItems = 60, 
-    forceRefresh = false
+    query: string,
+    maxItems = 60,
+    forceRefresh = false,
+    isMaintenance = false
 ): Promise<CatalogSearchResult> {
     const normalizedQuery = query.toLowerCase().trim();
     const signatures = generateSignatures(normalizedQuery);
 
-    // Log the search query for real-time trends
-    await catalog.logSearchQuery(normalizedQuery).catch(err => {
-        console.error('[Catalog] Failed to log search query:', err);
-    });
+    if (!isMaintenance) {
+        // Log the search query for real-time trends
+        await catalog.logSearchQuery(normalizedQuery).catch(err => {
+            console.error('[Catalog] Failed to log search query:', err);
+        });
+    }
 
     // ── Step 0: Redis Cache ────────────────────────────
     if (forceRefresh) {
@@ -67,12 +71,12 @@ export async function catalogSearch(
             try {
                 const cached = JSON.parse(cachedRaw) as CatalogSearchResult;
                 console.log(`[Catalog] Redis CACHE HIT for "${normalizedQuery}"`);
-                
+
                 // Buffer popularity increment even on cache hit!
-                if (cached.product?.id) {
+                if (cached.product?.id && !isMaintenance) {
                     await redis.incr(cacheKey.searchCount(cached.product.id));
                 }
-                
+
                 return { ...cached, source: 'cache' };
             } catch { /* ignore parse errors, proceed */ }
         }
@@ -91,7 +95,7 @@ export async function catalogSearch(
             // e.g. "iphone 16" and "iphone 17" have high similarity but different numbers
             const queryNumbers = normalizedQuery.match(/\d+/g)?.join('_');
             const matchNumbers = similar[0].normalized_name.match(/\d+/g)?.join('_');
-            
+
             if (queryNumbers === matchNumbers) {
                 product = similar[0];
             } else {
@@ -106,7 +110,9 @@ export async function catalogSearch(
         const result = await buildProductResponse(product, 'db');
 
         // Buffer popularity increment
-        await redis.incr(cacheKey.searchCount(product.id));
+        if (!isMaintenance) {
+            await redis.incr(cacheKey.searchCount(product.id));
+        }
 
         // Seed cache
         await redis.set(
@@ -118,22 +124,43 @@ export async function catalogSearch(
         return result;
     }
 
-    // ── Step 3: Scraper (with concurrency guard) ───────
-    const lockKey = cacheKey.scrapeLock(signatures.productSignature);
-    const lockAcquired = await redis.set(lockKey, '1', 'EX', SCRAPE_LOCK_TTL_SECONDS, 'NX');
+    // ── Step 3: Scraper (with concurrency guards) ─────
+    // A. Product Lock: Prevent multiple scrapes for THE SAME product
+    const productLockKey = cacheKey.scrapeLock(signatures.productSignature);
+    const productLockAcquired = await redis.set(productLockKey, '1', 'EX', SCRAPE_LOCK_TTL_SECONDS, 'NX');
 
-    if (!lockAcquired) {
-        // Another scraper is running for this product; serve stale if available
+    if (!productLockAcquired) {
         if (product) {
-            console.log(`[Catalog] Lock active, serving stale for "${normalizedQuery}"`);
+            console.log(`[Catalog] Product lock active, serving stale for "${normalizedQuery}"`);
             return buildProductResponse(product, 'stale-fallback');
         }
-        // No data at all, wait briefly
         await new Promise(r => setTimeout(r, 3000));
         const retryCache = await redis.get(cacheKey.search(normalizedQuery));
-        if (retryCache) {
-            return { ...JSON.parse(retryCache), source: 'cache' };
+        if (retryCache) return { ...JSON.parse(retryCache), source: 'cache' };
+    }
+
+    // B. Global Browser Lock: Prevent multiple processes from fighting over the SAME TAB
+    const globalLockKey = cacheKey.globalBrowserLock();
+    let globalLockAcquired = false;
+
+    // Retry up to 10 times (approx 30s) to get the browser
+    for (let i = 0; i < 15; i++) {
+        globalLockAcquired = !!(await redis.set(globalLockKey, '1', 'EX', 120, 'NX'));
+        if (globalLockAcquired) break;
+
+        console.log(`[Catalog] Browser busy, waiting... (attempt ${i + 1}/15)`);
+        await new Promise(r => setTimeout(r, 2000));
+    }
+
+    if (!globalLockAcquired) {
+        // Still busy? Serve stale if we have it
+        if (product) {
+            console.warn(`[Catalog] Global lock timeout, serving stale for "${normalizedQuery}"`);
+            await redis.del(productLockKey); // Release product lock so others can try
+            return buildProductResponse(product, 'stale-fallback');
         }
+        await redis.del(productLockKey);
+        throw new Error('Browser is currently busy with other tasks. Please try again in 1 minute.');
     }
 
     try {
@@ -141,7 +168,7 @@ export async function catalogSearch(
         let rawListings: Listing[] = [];
 
         try {
-            rawListings = await scrapeListings(normalizedQuery, 'shopee', maxItems);
+            rawListings = await scrapeListings(normalizedQuery, 'shopee', maxItems, isMaintenance);
         } catch (err) {
             console.error(`[Catalog] Scraper EXCEPTION for "${normalizedQuery}":`, err);
             if (product) {
@@ -170,7 +197,9 @@ export async function catalogSearch(
         const result = await buildProductResponse(persistedProduct, 'scraper');
 
         // Buffer popularity
-        await redis.incr(cacheKey.searchCount(persistedProduct.id));
+        if (!isMaintenance) {
+            await redis.incr(cacheKey.searchCount(persistedProduct.id));
+        }
 
         // Seed cache
         await redis.set(
@@ -195,8 +224,9 @@ export async function catalogSearch(
             variants: [],
         };
     } finally {
-        // Release lock
-        await redis.del(lockKey);
+        // Release locks
+        await redis.del(productLockKey);
+        await redis.del(globalLockKey);
     }
 }
 
