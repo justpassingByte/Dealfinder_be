@@ -334,12 +334,12 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                     current_length = 50  # Xóa dư còn hơn sót
                 
                 # Nhấn phím End để xuống cuối dòng
-                page.actions.key_down('End').key_up('End')
+                page.actions.key_down('END').key_up('END')
                 time.sleep(random.uniform(0.1, 0.2))
                 
-                # Bấm Backspace từng nhịp
+                # Bấm Backspace từng nhịp BẰNG PHÍM THẬT (sửa lỗi ký tự lạ do \b)
                 for _ in range(current_length + 5):
-                    search_input.input('\b', clear=False)
+                    page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
                     time.sleep(random.uniform(0.01, 0.04))
                 
                 time.sleep(random.uniform(0.2, 0.5))
