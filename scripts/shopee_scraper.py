@@ -320,18 +320,37 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             if search_input:
                 search_input.click()
                 time.sleep(random.uniform(0.8, 1.5))
-                # Xóa nội dung cũ trong thanh search một cách triệt để
+
+                # === XÓA TRIỆT ĐỂ nội dung cũ trong thanh search ===
+                # Bước 1: Dùng JavaScript để reset giá trị input về rỗng
                 try:
-                    search_input.clear()
-                except:
-                    # Fallback: thủ công nếu clear() không thành công
+                    page.run_js_loaded(
+                        "el.value = ''; el.dispatchEvent(new Event('input', {bubbles: true}));",
+                        search_input
+                    )
+                except Exception:
+                    pass
+                
+                # Bước 2: Ctrl+A rồi Delete để chắc chắn xóa hết (phòng trường hợp JS không ăn)
+                try:
+                    search_input.click()
                     page.actions.key_down('CONTROL').key_down('a').key_up('a').key_up('CONTROL')
-                    page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
+                    time.sleep(0.1)
+                    page.actions.key_down('DELETE').key_up('DELETE')
+                    time.sleep(0.1)
+                    # Nhấn thêm Backspace nhiều lần phòng trường hợp còn sót
+                    for _ in range(5):
+                        page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
+                except Exception:
+                    pass
                 
                 time.sleep(random.uniform(0.3, 0.6))
+                
+                # === NHẬP query mới từng ký tự (giống người dùng thật) ===
                 for char in query:
-                    search_input.input(char)
+                    page.actions.type(char)
                     time.sleep(random.uniform(0.05, 0.15))
+                
                 # Click nút Search thay vì Enter (Enter bị Shopee bỏ qua trong headless)
                 time.sleep(random.uniform(0.8, 1.5))
                 search_btn = page.ele('css:button.btn-solid-primary', timeout=3)
@@ -342,7 +361,7 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 if search_btn:
                     search_btn.click()
                 else:
-                    search_input.input('\n')
+                    page.actions.type('\n')
             else:
                 page.get(f"https://shopee.vn/search?keyword={query.replace(' ', '%20')}")
 

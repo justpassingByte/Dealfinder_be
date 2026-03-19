@@ -54,12 +54,20 @@ Kiến trúc mới nhất:
    docker compose exec backend npm run migrate:catalog
    ```
 
-7. **Bypass CAPTCHA Shopee (Giữ nguyên như cũ):**
-   Vì thuật toán cào của Worker sẽ gặp phải CAPTCHA, mở cửa sổ Terminal (hoặc CMD) **BÊN TRONG MÁY TÍNH CÁ NHÂN CỦA BẠN (KHÔNG PHẢI VPS)** và gõ:
-   ```bash
-   ssh -L 9222:localhost:9222 root@ip_cua_vps
-   ```
-   Sau đó mở Google Chrome, lướt địa chỉ `http://localhost:9222`, chọn Tab Shopee giả lập và tick Captcha bằng tay. Nó sẽ vượt rào mọi công nghệ anti-bot.
+7. **Bypass CAPTCHA Shopee (Giải pháp triệt để):**
+   Hệ thống sử dụng cơ chế giả lập vân tay trình duyệt (fingerprinting) và gõ phím như người thật để tránh bị Shopee block. Tuy nhiên, thi thoảng Shopee vẫn sẽ hiện CAPTCHA. Cách xử lý:
+   
+   - **Bước 1 (Trên máy tính cá nhân):** Mở Terminal/CMD và tạo SSH Tunnel để "mượn" trình duyệt đang chạy trên VPS:
+     ```bash
+     ssh -L 9223:localhost:9223 root@ip_cua_vps
+     ```
+   - **Bước 2:** Mở trình duyệt Chrome trên máy cá nhân, truy cập địa chỉ: `http://localhost:9223`.
+   - **Bước 3:** Bạn sẽ thấy danh sách các Tab đang mở trên VPS. Hãy chọn Tab Shopee đang bị kẹt CAPTCHA.
+   - **Bước 4:** Giải CAPTCHA bằng tay ngay trên trình duyệt máy bạn (reCAPTCHA hoặc kéo thanh trượt). 
+   - **Lưu ý quan trọng:** Không được đóng các Tab này! Worker được thiết kế để giữ lại Tab nhằm duy trì trạng thái đăng nhập và "độ tin cậy" (trust score) của trình duyệt đối với Shopee. 
+
+8. **Tối ưu RAM cho VPS (Quan trọng):**
+   Mỗi khi hệ thống cào xong, scraper sẽ tự động dọn dẹp cache trình duyệt và ép nhả RAM (garbage collection) để đảm bảo VPS có thể chạy ổn định lâu dài ngay cả với cấu hình thấp (2GB-4GB RAM).
 
 ---
 
