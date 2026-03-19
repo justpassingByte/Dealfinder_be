@@ -331,18 +331,13 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 for char in query:
                     search_input.input(char, clear=False)
                     time.sleep(random.uniform(0.05, 0.15))
-                
-                # Click nút Search
-                time.sleep(random.uniform(0.8, 1.5))
-                search_btn = page.ele('css:button.btn-solid-primary', timeout=3)
-                if not search_btn:
-                    search_btn = page.ele('css:.shopee-searchbar__search-button', timeout=2)
-                if not search_btn:
-                    search_btn = page.ele('css:button[type="button"]', timeout=2)
-                if search_btn:
-                    search_btn.click()
-                else:
-                    search_input.input('\n', clear=False)
+
+                # Click nút Search BẰNG PHÍM ENTER (Chuẩn & chắc chắn nhất)
+                # Thay vì đi tìm nút Search click dễ hụt (do class thay đổi hoặc React chưa nhận event)
+                time.sleep(random.uniform(0.5, 1.0))
+                search_input.input('\n', clear=False)
+                # Chờ trang kết quả load
+                time.sleep(random.uniform(1.5, 2.5))
             else:
                 page.get(f"https://shopee.vn/search?keyword={query.replace(' ', '%20')}")
 
