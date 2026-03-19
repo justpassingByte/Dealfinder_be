@@ -321,37 +321,40 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 search_input.click()
                 time.sleep(random.uniform(0.8, 1.5))
 
-                # === XÓA TRIỆT ĐỂ nội dung cũ trong thanh search ===
-                # Bước 1: Dùng JavaScript để reset giá trị input về rỗng
+                # === XÓA TRIỆT ĐỂ nội dung cũ (React-compatible) ===
+                # React override thuộc tính `value`, nên phải dùng native setter
+                # của HTMLInputElement để React nhận ra sự thay đổi.
                 try:
-                    page.run_js_loaded(
-                        "el.value = ''; el.dispatchEvent(new Event('input', {bubbles: true}));",
-                        search_input
-                    )
-                except Exception:
-                    pass
-                
-                # Bước 2: Ctrl+A rồi Delete để chắc chắn xóa hết (phòng trường hợp JS không ăn)
-                try:
-                    search_input.click()
-                    page.actions.key_down('CONTROL').key_down('a').key_up('a').key_up('CONTROL')
-                    time.sleep(0.1)
-                    page.actions.key_down('DELETE').key_up('DELETE')
-                    time.sleep(0.1)
-                    # Nhấn thêm Backspace nhiều lần phòng trường hợp còn sót
-                    for _ in range(5):
-                        page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
-                except Exception:
-                    pass
+                    page.run_js_loaded("""
+                        var nativeSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeSetter.call(el, '');
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    """, search_input)
+                except Exception as e:
+                    print(f"[Scraper] Native setter clear failed: {e}", file=sys.stderr)
                 
                 time.sleep(random.uniform(0.3, 0.6))
                 
-                # === NHẬP query mới từng ký tự (giống người dùng thật) ===
+                # Verify đã clear thành công
+                try:
+                    remaining = page.run_js_loaded("return el.value;", search_input)
+                    if remaining:
+                        print(f"[Scraper] Input still has value: '{remaining}', retrying...", file=sys.stderr)
+                        # Fallback: triple-click chọn hết rồi gõ đè
+                        search_input.click.multi(times=3)
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+                
+                # === NHẬP query mới từng ký tự ===
                 for char in query:
-                    page.actions.type(char)
+                    search_input.input(char, clear=False)
                     time.sleep(random.uniform(0.05, 0.15))
                 
-                # Click nút Search thay vì Enter (Enter bị Shopee bỏ qua trong headless)
+                # Click nút Search
                 time.sleep(random.uniform(0.8, 1.5))
                 search_btn = page.ele('css:button.btn-solid-primary', timeout=3)
                 if not search_btn:
@@ -361,7 +364,7 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 if search_btn:
                     search_btn.click()
                 else:
-                    page.actions.type('\n')
+                    search_input.input('\n', clear=False)
             else:
                 page.get(f"https://shopee.vn/search?keyword={query.replace(' ', '%20')}")
 
