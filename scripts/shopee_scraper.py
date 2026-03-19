@@ -304,42 +304,31 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             page.get(query)
             time.sleep(random.uniform(2.0, 4.0))
         else:
-            # Existing Search Mode logic
-            # === RESET STATE REACT CÁCH AN TOÀN NHẤT ===
-            # Nếu đang ở trang có kết quả tìm kiếm cũ (chứa keyword=) 
-            # hoặc chưa ở shopee, ta về thẳng trang chủ để ô Search tự trống trơn 100%,
-            # khỏi cần tìm cách hack xóa text của React nữa.
-            if 'shopee.vn' not in page.url or 'keyword=' in page.url:
-                page.get('https://shopee.vn/')
-                time.sleep(random.uniform(1.5, 3.0))
+            # === BYPASS HOÀN TOÀN TÌM KIẾM BẰNG UI (Tránh lỗi React State trên VPS chậm) ===
+            # Nhược điểm của việc gõ phím: Trên VPS chậm, code Python gõ phím 
+            # TRƯỚC VÀ TRONG LÚC React chưa kịp load sự kiện onChange.
+            # Dẫn tới việc text hiện trên ô input (DOM) nhưng React State không nhận!
+            # -> Giải pháp dứt điểm: Truy cập thẳng URL tìm kiếm chứa keyword.
+            import urllib.parse
+            encoded_query = urllib.parse.quote(query)
+            search_url = f"https://shopee.vn/search?keyword={encoded_query}"
             
-            # Close popups
+            # Chỉ reload nếu đang ở một từ khóa khác để tiết kiệm tài nguyên
+            if encoded_query not in page.url:
+                print(f"[Scraper] Navigating directly to search URL for query: {query}", file=sys.stderr)
+                page.get(search_url)
+                time.sleep(random.uniform(2.0, 4.0))
+            else:
+                print(f"[Scraper] Already on search page for query: {query}", file=sys.stderr)
+                # Kéo lên đầu trang để search mới nếu cần
+                page.scroll.to_top()
+            
+            # Đóng popups rác nếu có
             try:
                 for selector in ['css:.shopee-popup__close-btn', 'css:.shopee-modal__close']:
                     close_btn = page.ele(selector, timeout=0.5)
                     if close_btn: close_btn.click()
             except: pass
-
-            search_input = page.ele('css:.shopee-searchbar-input__input', timeout=5)
-            if search_input:
-                search_input.click()
-                time.sleep(random.uniform(0.1, 0.3))
-                
-                # KHÔNG CẦN CLEAR NỮA VÌ TRANG CHỦ LÀ Ô TRỐNG
-                
-                # === NHẬP query mới từng ký tự ===
-                for char in query:
-                    search_input.input(char, clear=False)
-                    time.sleep(random.uniform(0.05, 0.15))
-
-                # Click nút Search BẰNG PHÍM ENTER (Chuẩn & chắc chắn nhất)
-                # Thay vì đi tìm nút Search click dễ hụt (do class thay đổi hoặc React chưa nhận event)
-                time.sleep(random.uniform(0.5, 1.0))
-                search_input.input('\n', clear=False)
-                # Chờ trang kết quả load
-                time.sleep(random.uniform(1.5, 2.5))
-            else:
-                page.get(f"https://shopee.vn/search?keyword={query.replace(' ', '%20')}")
 
         # --- CAPTCHA CHECK ---
         def handle_captcha(p):
