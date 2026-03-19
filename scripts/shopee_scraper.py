@@ -321,33 +321,14 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 search_input.click()
                 time.sleep(random.uniform(0.8, 1.5))
 
-                # === XÓA TRIỆT ĐỂ nội dung cũ (React-compatible) ===
-                # React override thuộc tính `value`, nên phải dùng native setter
-                # của HTMLInputElement để React nhận ra sự thay đổi.
+                # === XÓA nội dung cũ: select() rồi gõ đè — cross-platform ===
+                # el.select() chọn hết text, ký tự đầu tiên gõ vào sẽ tự thay thế
+                # Đây là hành vi chuẩn của mọi browser, mọi OS
                 try:
-                    page.run_js_loaded("""
-                        var nativeSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
-                        ).set;
-                        nativeSetter.call(el, '');
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                    """, search_input)
-                except Exception as e:
-                    print(f"[Scraper] Native setter clear failed: {e}", file=sys.stderr)
-                
-                time.sleep(random.uniform(0.3, 0.6))
-                
-                # Verify đã clear thành công
-                try:
-                    remaining = page.run_js_loaded("return el.value;", search_input)
-                    if remaining:
-                        print(f"[Scraper] Input still has value: '{remaining}', retrying...", file=sys.stderr)
-                        # Fallback: triple-click chọn hết rồi gõ đè
-                        search_input.click.multi(times=3)
-                        time.sleep(0.2)
+                    page.run_js_loaded("el.focus(); el.select();", search_input)
                 except Exception:
                     pass
+                time.sleep(random.uniform(0.3, 0.5))
                 
                 # === NHẬP query mới từng ký tự ===
                 for char in query:
