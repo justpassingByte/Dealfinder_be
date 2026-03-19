@@ -321,13 +321,16 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 search_input.click()
                 time.sleep(random.uniform(0.8, 1.5))
 
-                # === XÓA nội dung cũ: select() rồi gõ đè — cross-platform ===
-                # el.select() chọn hết text, ký tự đầu tiên gõ vào sẽ tự thay thế
-                # Đây là hành vi chuẩn của mọi browser, mọi OS
+                # === XÓA nội dung cũ: Stable & Clean (Cách 1) ===
+                # Đặt value rỗng và dispatch event để trigger React/Vue nhận diện sự thay đổi
                 try:
-                    page.run_js_loaded("el.focus(); el.select();", search_input)
-                except Exception:
-                    pass
+                    search_input.run_js("""
+                        this.value = '';
+                        this.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.dispatchEvent(new Event('change', { bubbles: true }));
+                    """)
+                except Exception as e:
+                    print(f"[Scraper] Clear input failed: {e}", file=sys.stderr)
                 time.sleep(random.uniform(0.3, 0.5))
                 
                 # === NHẬP query mới từng ký tự ===
