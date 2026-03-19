@@ -321,17 +321,28 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 search_input.click()
                 time.sleep(random.uniform(0.8, 1.5))
 
-                # === XÓA nội dung cũ: Stable & Clean (Cách 1) ===
-                # Đặt value rỗng và dispatch event để trigger React/Vue nhận diện sự thay đổi
+                # === XÓA NỘI DUNG CŨ: Thuần túy giả lập phím (Chống Traffic Error) ===
+                # KHÔNG dùng JS dispatchEvent vì isTrusted=false -> dính Anti-bot Shopee.
+                # Bấm 'End' để nhảy con trỏ xuống cuối, sau đó giữ Backspace để xóa.
+                search_input.click()
+                time.sleep(random.uniform(0.1, 0.3))
+                
+                # Cố gắng lấy độ dài chữ hiện tại để xóa đủ
                 try:
-                    search_input.run_js("""
-                        this.value = '';
-                        this.dispatchEvent(new Event('input', { bubbles: true }));
-                        this.dispatchEvent(new Event('change', { bubbles: true }));
-                    """)
-                except Exception as e:
-                    print(f"[Scraper] Clear input failed: {e}", file=sys.stderr)
-                time.sleep(random.uniform(0.3, 0.5))
+                    current_length = len(search_input.attr('value') or '')
+                except:
+                    current_length = 50  # Xóa dư còn hơn sót
+                
+                # Nhấn phím End để xuống cuối dòng
+                page.actions.key_down('End').key_up('End')
+                time.sleep(random.uniform(0.1, 0.2))
+                
+                # Bấm Backspace từng nhịp
+                for _ in range(current_length + 5):
+                    search_input.input('\b', clear=False)
+                    time.sleep(random.uniform(0.01, 0.04))
+                
+                time.sleep(random.uniform(0.2, 0.5))
                 
                 # === NHẬP query mới từng ký tự ===
                 for char in query:
