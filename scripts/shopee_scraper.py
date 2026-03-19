@@ -305,7 +305,11 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             time.sleep(random.uniform(2.0, 4.0))
         else:
             # Existing Search Mode logic
-            if 'shopee.vn' not in page.url:
+            # === RESET STATE REACT CÁCH AN TOÀN NHẤT ===
+            # Nếu đang ở trang có kết quả tìm kiếm cũ (chứa keyword=) 
+            # hoặc chưa ở shopee, ta về thẳng trang chủ để ô Search tự trống trơn 100%,
+            # khỏi cần tìm cách hack xóa text của React nữa.
+            if 'shopee.vn' not in page.url or 'keyword=' in page.url:
                 page.get('https://shopee.vn/')
                 time.sleep(random.uniform(1.5, 3.0))
             
@@ -319,19 +323,9 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             search_input = page.ele('css:.shopee-searchbar-input__input', timeout=5)
             if search_input:
                 search_input.click()
-                time.sleep(random.uniform(0.8, 1.5))
-
-                # === XÓA NỘI DUNG CŨ: Thuần túy giả lập phím (Chống Traffic Error) ===
-                # KHÔNG dùng JS dispatchEvent vì isTrusted=false -> dính Anti-bot Shopee.
-                # Bấm 'End' để nhảy con trỏ xuống cuối, sau đó giữ Backspace để xóa.
-                search_input.click()
                 time.sleep(random.uniform(0.1, 0.3))
                 
-                # === XÓA NỘI DUNG CŨ: Dùng hàm clear() chuẩn của DrissionPage ===
-                # Hàm này tự động giả lập bôi đen và xóa (hoặc backspace) an toàn, 
-                # không cần phải tự gửi event phím thủ công, tránh lỗi focus trên VPS.
-                search_input.clear(by_js=False)
-                time.sleep(random.uniform(0.3, 0.6))
+                # KHÔNG CẦN CLEAR NỮA VÌ TRANG CHỦ LÀ Ô TRỐNG
                 
                 # === NHẬP query mới từng ký tự ===
                 for char in query:
