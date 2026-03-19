@@ -327,22 +327,11 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 search_input.click()
                 time.sleep(random.uniform(0.1, 0.3))
                 
-                # Cố gắng lấy độ dài chữ hiện tại để xóa đủ
-                try:
-                    current_length = len(search_input.attr('value') or '')
-                except:
-                    current_length = 50  # Xóa dư còn hơn sót
-                
-                # Nhấn phím End để xuống cuối dòng
-                page.actions.key_down('END').key_up('END')
-                time.sleep(random.uniform(0.1, 0.2))
-                
-                # Bấm Backspace từng nhịp BẰNG PHÍM THẬT (sửa lỗi ký tự lạ do \b)
-                for _ in range(current_length + 5):
-                    page.actions.key_down('BACKSPACE').key_up('BACKSPACE')
-                    time.sleep(random.uniform(0.01, 0.04))
-                
-                time.sleep(random.uniform(0.2, 0.5))
+                # === XÓA NỘI DUNG CŨ: Dùng hàm clear() chuẩn của DrissionPage ===
+                # Hàm này tự động giả lập bôi đen và xóa (hoặc backspace) an toàn, 
+                # không cần phải tự gửi event phím thủ công, tránh lỗi focus trên VPS.
+                search_input.clear(by_js=False)
+                time.sleep(random.uniform(0.3, 0.6))
                 
                 # === NHẬP query mới từng ký tự ===
                 for char in query:
