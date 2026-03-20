@@ -7,10 +7,49 @@ interface ChromeTarget {
     url?: string;
 }
 
-function resolveDebugHost(profile: ScraperProfile): string {
-    return typeof profile.metadata.debugHost === 'string' && profile.metadata.debugHost.trim()
-        ? profile.metadata.debugHost.trim()
-        : profile.assignedWorkerId;
+interface DebugEndpointCandidate {
+    host: string;
+    port: number;
+}
+
+interface ResolvedChromeTargets {
+    debugHost: string;
+    debugPort: number;
+    targets: ChromeTarget[];
+}
+
+function resolveDebugHost(profile: ScraperProfile): string | null {
+    if (typeof profile.metadata.debugHost === 'string' && profile.metadata.debugHost.trim()) {
+        return profile.metadata.debugHost.trim();
+    }
+
+    return null;
+}
+
+function buildDebugEndpointCandidates(profile: ScraperProfile): DebugEndpointCandidate[] {
+    const candidates: DebugEndpointCandidate[] = [];
+    const seen = new Set<string>();
+
+    function push(host: string | null | undefined, port: number | null | undefined): void {
+        if (!host || !port) {
+            return;
+        }
+
+        const key = `${host}:${port}`;
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        candidates.push({ host, port });
+    }
+
+    push(resolveDebugHost(profile), profile.browserTargetPort);
+    push(profile.assignedWorkerId, profile.browserTargetPort);
+    push('host.docker.internal', profile.debugTunnelPort ?? profile.browserTargetPort);
+    push('127.0.0.1', profile.debugTunnelPort ?? profile.browserTargetPort);
+
+    return candidates;
 }
 
 function isNoiseTarget(target: ChromeTarget): boolean {
@@ -45,21 +84,40 @@ async function fetchChromeTargets(debugHost: string, debugPort: number): Promise
     }
 }
 
+async function resolveChromeTargets(profile: ScraperProfile): Promise<ResolvedChromeTargets> {
+    const candidates = buildDebugEndpointCandidates(profile);
+    const errors: string[] = [];
+
+    for (const candidate of candidates) {
+        try {
+            const targets = await fetchChromeTargets(candidate.host, candidate.port);
+            return {
+                debugHost: candidate.host,
+                debugPort: candidate.port,
+                targets,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown DevTools fetch error.';
+            errors.push(`${candidate.host}:${candidate.port} -> ${message}`);
+        }
+    }
+
+    throw new Error(errors.join(' | ') || 'Unable to reach any DevTools endpoint for this profile.');
+}
+
 export class DevtoolsTargetService {
     async checkStatus(profile: ScraperProfile): Promise<DevtoolsStatus> {
-        const debugHost = resolveDebugHost(profile);
-        const debugPort = profile.browserTargetPort;
         const localTunnelPort = profile.debugTunnelPort ?? profile.browserTargetPort;
 
         try {
-            const rawTargets = await fetchChromeTargets(debugHost, debugPort);
-            const visibleTargets = filterVisibleTargets(rawTargets);
+            const resolved = await resolveChromeTargets(profile);
+            const visibleTargets = filterVisibleTargets(resolved.targets);
 
             return {
                 reachable: true,
                 checkedAt: new Date(),
-                debugHost,
-                debugPort,
+                debugHost: resolved.debugHost,
+                debugPort: resolved.debugPort,
                 localTunnelPort,
                 targetCount: visibleTargets.length,
                 recommendedTargetId: visibleTargets[0]?.id ?? null,
@@ -70,8 +128,8 @@ export class DevtoolsTargetService {
             return {
                 reachable: false,
                 checkedAt: new Date(),
-                debugHost,
-                debugPort,
+                debugHost: profile.assignedWorkerId,
+                debugPort: profile.browserTargetPort,
                 localTunnelPort,
                 targetCount: 0,
                 recommendedTargetId: null,
@@ -81,9 +139,8 @@ export class DevtoolsTargetService {
     }
 
     async listTargets(profile: ScraperProfile): Promise<DevtoolsTarget[]> {
-        const debugHost = resolveDebugHost(profile);
-        const rawTargets = await fetchChromeTargets(debugHost, profile.browserTargetPort);
-        const visibleTargets = filterVisibleTargets(rawTargets);
+        const resolved = await resolveChromeTargets(profile);
+        const visibleTargets = filterVisibleTargets(resolved.targets);
         const localPort = profile.debugTunnelPort ?? profile.browserTargetPort;
 
         return visibleTargets.map((target) => ({

@@ -218,7 +218,7 @@ export class ScraperProfileService {
             {
                 title: 'Open SSH tunnel',
                 description: 'Run this in your terminal, then return here and refresh targets in the dashboard.',
-                command: `${sshPrefix} -L ${tunnelPort}:localhost:${profile.browserTargetPort} ${ops.sshUser}@${ops.sshHost}`,
+                command: `${sshPrefix} -L ${tunnelPort}:localhost:${tunnelPort} ${ops.sshUser}@${ops.sshHost}`,
             },
             {
                 title: 'Verify DevTools target list',
