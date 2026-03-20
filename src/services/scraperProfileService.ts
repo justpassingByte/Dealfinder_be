@@ -461,10 +461,16 @@ export class ScraperProfileService {
     async finishRecovery(id: string): Promise<ScraperProfile> {
         const profile = await this.getProfileOrThrow(id);
         this.ensureMutable(profile);
+        const metadata = { ...profile.metadata };
+        delete metadata.pendingWarmupQuery;
 
         const next = await scraperProfileRepository.withTransaction(async (client) => {
             const updated = await scraperProfileRepository.updateProfile(id, {
-                status: 'recovering',
+                status: 'active',
+                recovery_started_at: null,
+                warmup_requested_at: null,
+                warmup_success_streak: 0,
+                metadata_json: metadata,
             }, client);
 
             if (!updated) {
@@ -474,7 +480,7 @@ export class ScraperProfileService {
             await scraperProfileRepository.insertEvent(id, {
                 eventType: 'recovery_finished',
                 oldStatus: profile.status,
-                newStatus: 'recovering',
+                newStatus: 'active',
             }, client);
 
             return updated;
