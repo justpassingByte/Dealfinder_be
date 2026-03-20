@@ -174,6 +174,14 @@ export const scraperProfileRepository = {
         return result.rows[0] ? mapProfileRow(result.rows[0]) : null;
     },
 
+    async deleteProfile(id: string, executor?: Queryable): Promise<boolean> {
+        const result = await getExecutor(executor).query(
+            'DELETE FROM scraper_profiles WHERE id = $1',
+            [id],
+        );
+        return (result.rowCount ?? 0) > 0;
+    },
+
     async getProfileById(id: string, executor?: Queryable): Promise<ScraperProfile | null> {
         const result = await getExecutor(executor).query(
             'SELECT * FROM scraper_profiles WHERE id = $1 LIMIT 1',

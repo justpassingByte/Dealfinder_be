@@ -5,8 +5,8 @@ CREATE TABLE IF NOT EXISTS search_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_search_logs_query ON search_logs(query);
-CREATE INDEX idx_search_logs_created_at ON search_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_search_logs_query ON search_logs(query);
+CREATE INDEX IF NOT EXISTS idx_search_logs_created_at ON search_logs(created_at);
 
 -- DOWN
 DROP TABLE IF EXISTS search_logs CASCADE;

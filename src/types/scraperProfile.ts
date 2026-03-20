@@ -102,7 +102,7 @@ export interface ScraperCommandStep {
 export interface ScraperProfileCommandGuides {
     add: ScraperCommandStep[];
     recovery: ScraperCommandStep[];
-    archive: ScraperCommandStep[];
+    cleanup: ScraperCommandStep[];
 }
 
 export interface DevtoolsTarget {
@@ -111,6 +111,17 @@ export interface DevtoolsTarget {
     type: string;
     url: string;
     localInspectorUrl: string;
+}
+
+export interface DevtoolsStatus {
+    reachable: boolean;
+    checkedAt: Date;
+    debugHost: string;
+    debugPort: number;
+    localTunnelPort: number;
+    targetCount: number;
+    recommendedTargetId: string | null;
+    error: string | null;
 }
 
 export interface ScrapeTelemetry {

@@ -227,20 +227,30 @@ export class ScraperProfileService {
             },
         ];
 
-        const archive: ScraperCommandStep[] = [
+        const cleanup: ScraperCommandStep[] = [
             {
-                title: 'Archive the host profile directory',
-                description: 'Use this after the profile is archived in the app and the worker is stopped or reassigned.',
+                title: 'Stop assigned worker first',
+                description: 'Run this before moving or deleting the real browser profile folder on the VPS.',
+                command: `cd ${ops.dockerComposeDir}\ndocker compose stop ${profile.assignedWorkerId}`,
+            },
+            {
+                title: 'Move the profile directory out of service',
+                description: 'This is the safe default. It keeps a backup before you delete the app record.',
                 command: `mkdir -p ${ops.archiveBasePath}\nmv ${profileDir} ${archiveDir}`,
             },
             {
-                title: 'Restart worker after cleanup',
-                description: 'Only run this if the worker assignment still exists and needs to come back with a new mount.',
+                title: 'Permanently delete the moved directory',
+                description: 'Optional. Run this only after you verify you no longer need the archived browser session.',
+                command: `rm -rf ${archiveDir}`,
+            },
+            {
+                title: 'Bring the worker back with a new mount',
+                description: 'Only run this if the worker still exists and you are attaching a replacement profile directory.',
                 command: `cd ${ops.dockerComposeDir}\ndocker compose restart ${profile.assignedWorkerId}`,
             },
         ];
 
-        return { add, recovery, archive };
+        return { add, recovery, cleanup };
     }
 
     async listProfiles(): Promise<ScraperProfileListItem[]> {
@@ -402,37 +412,23 @@ export class ScraperProfileService {
         return scraperProfileRepository.getProfileStats(id);
     }
 
-    async archiveProfile(id: string): Promise<ScraperProfile> {
+    async deleteProfile(id: string): Promise<void> {
         const profile = await this.getProfileOrThrow(id);
         this.ensureMutable(profile);
 
         if (profile.isRunnable && profile.lastHeartbeatAt) {
             throw new ScraperProfileError(
-                'Profile is still claimed by a runnable worker. Pause or reassign the worker first.',
+                'Profile is still claimed by a runnable worker. Move it out of active traffic before deleting it.',
                 409,
             );
         }
 
-        const archived = await scraperProfileRepository.withTransaction(async (client) => {
-            const next = await scraperProfileRepository.updateProfile(id, {
-                status: 'archived',
-                archived_at: new Date(),
-            }, client);
-
-            if (!next) {
+        await scraperProfileRepository.withTransaction(async (client) => {
+            const deleted = await scraperProfileRepository.deleteProfile(id, client);
+            if (!deleted) {
                 throw new ScraperProfileError('Profile not found.', 404);
             }
-
-            await scraperProfileRepository.insertEvent(id, {
-                eventType: 'profile_archived',
-                oldStatus: profile.status,
-                newStatus: 'archived',
-            }, client);
-
-            return next;
         });
-
-        return this.enrichProfile(archived);
     }
 
     async startRecovery(id: string): Promise<ScraperProfile> {
@@ -462,22 +458,13 @@ export class ScraperProfileService {
         return this.enrichProfile(next);
     }
 
-    async finishRecovery(id: string, requestedWarmupQuery?: string): Promise<ScraperProfile> {
+    async finishRecovery(id: string): Promise<ScraperProfile> {
         const profile = await this.getProfileOrThrow(id);
         this.ensureMutable(profile);
 
-        const warmupQuery = this.resolveWarmupQuery(profile, requestedWarmupQuery);
-        const metadata = {
-            ...profile.metadata,
-            pendingWarmupQuery: warmupQuery,
-        };
-
         const next = await scraperProfileRepository.withTransaction(async (client) => {
             const updated = await scraperProfileRepository.updateProfile(id, {
-                status: 'warming',
-                warmup_requested_at: new Date(),
-                warmup_success_streak: 0,
-                metadata_json: metadata,
+                status: 'recovering',
             }, client);
 
             if (!updated) {
@@ -487,10 +474,7 @@ export class ScraperProfileService {
             await scraperProfileRepository.insertEvent(id, {
                 eventType: 'recovery_finished',
                 oldStatus: profile.status,
-                newStatus: 'warming',
-                details: {
-                    warmupQuery,
-                },
+                newStatus: 'recovering',
             }, client);
 
             return updated;

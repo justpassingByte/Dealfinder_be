@@ -77,14 +77,17 @@ router.get('/profiles/:id/stats', async (req: Request, res: Response) => {
     }
 });
 
-router.post('/profiles/:id/archive', async (req: Request, res: Response) => {
+async function handleDeleteProfile(req: Request, res: Response): Promise<void> {
     try {
-        const profile = await scraperProfileService.archiveProfile(getRouteId(req));
-        res.json({ profile });
+        await scraperProfileService.deleteProfile(getRouteId(req));
+        res.json({ ok: true });
     } catch (error) {
         handleRouteError(error, res);
     }
-});
+}
+
+router.post('/profiles/:id/delete', handleDeleteProfile);
+router.post('/profiles/:id/archive', handleDeleteProfile);
 
 router.post('/profiles/:id/recovery/start', async (req: Request, res: Response) => {
     try {
@@ -109,9 +112,22 @@ router.get('/profiles/:id/devtools/targets', async (req: Request, res: Response)
     }
 });
 
+router.get('/profiles/:id/devtools/status', async (req: Request, res: Response) => {
+    try {
+        const detail = await scraperProfileService.getProfileDetail(getRouteId(req));
+        const status = await devtoolsTargetService.checkStatus(detail.profile);
+        res.json({
+            profileId: detail.profile.id,
+            status,
+        });
+    } catch (error) {
+        handleRouteError(error, res);
+    }
+});
+
 router.post('/profiles/:id/recovery/finish', async (req: Request, res: Response) => {
     try {
-        const profile = await scraperProfileService.finishRecovery(getRouteId(req), req.body?.warmupQuery);
+        const profile = await scraperProfileService.finishRecovery(getRouteId(req));
         res.json({ profile });
     } catch (error) {
         handleRouteError(error, res);
