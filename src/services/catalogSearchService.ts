@@ -60,7 +60,7 @@ async function dispatchScrapeJob(
         query,
         marketplace,
         maxItems,
-    });
+    }, { priority: 10 });
 
     // Wait up to 3 minutes for the worker to finish.
     const result = await job.waitUntilFinished(catalogQueueEvents, 180_000);

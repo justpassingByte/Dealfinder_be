@@ -96,7 +96,8 @@ async function fetchListingsForQuery(query: string, maxItems = 60): Promise<Sear
 
     await markJobInFlight(query);
     try {
-        const job = await scraperQueue.add('search', { query, marketplace: 'shopee', maxItems });
+        // priority 1 = Highest. Users should never wait behind background maintenance.
+        const job = await scraperQueue.add('search', { query, marketplace: 'shopee', maxItems }, { priority: 1 });
         const result = await job.waitUntilFinished(queueEvents, 10_000);
         const payload = result as { listings?: Listing[] } | undefined;
         return { ok: true, source: 'scraper', listings: payload?.listings ?? [] };
@@ -317,8 +318,14 @@ router.get('/search/catalog', async (req: Request, res: Response) => {
         for (const group of result.variants) {
             for (const listing of group.listings) {
                 const l = listing as any;
+                // Use the individual title if provided (for fresh scrapes) 
+                // or fallback to Variant Name + Shop Name to keep it unique.
+                const displayTitle = l.title || (group.variant.normalized_variant_name 
+                    ? `${group.variant.normalized_variant_name} - ${l.shop_name}` 
+                    : l.shop_name);
+
                 flatListings.push({
-                    title: group.variant.normalized_variant_name || '',
+                    title: displayTitle,
                     price: parseFloat(l.price as unknown as string),
                     rating: l.rating ? parseFloat(l.rating as unknown as string) : 0,
                     sold: l.sold,
