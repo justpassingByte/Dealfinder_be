@@ -256,10 +256,19 @@ export function generateSignatures(title: string): SignatureResult {
     sigParts.push(...modelTokens);
     const productSignature = sigParts.join('_') || 'unknown';
 
-    // 6. Build variant signature: storage_color
+    // 6. Build variant signature: storage_color + critical model tokens
+    // This prevents "AirPods 2" and "AirPods Pro" from being grouped together 
+    // if they are accidentally assigned to the same Product.
     const variantParts: string[] = [];
     if (storage) variantParts.push(storage);
     if (color) variantParts.push(color);
+    
+    // Add critical model tokens to variant signature for finer grouping
+    const criticalTokens = modelTokens.filter(t => 
+        MODEL_TOKENS.has(t) || /^\d+$/.test(t) || ['gen', 'thế', 'hệ'].includes(t)
+    );
+    variantParts.push(...criticalTokens);
+
     const variantSignature = variantParts.join('_') || 'default';
 
     // 7. Build display-friendly model name

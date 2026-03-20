@@ -217,7 +217,7 @@ router.get('/deal/:listingId', async (req: Request, res: Response) => {
         const rating = listing.rating ? Number(listing.rating) : 0;
         const baseUrl = `${req.protocol}://${req.get('host')}`;
         const cardImageUrl = `${baseUrl}/api/deal/${listingId}/card?medianPrice=${medianPrice}&discountPercent=${discountPercent}`;
-        const redirectUrl = `${baseUrl}/api/redirect/${listingId}`;
+        const redirectUrl = `/api/redirect/${listingId}`;
 
         const html = `<!DOCTYPE html>
 <html lang="vi">
