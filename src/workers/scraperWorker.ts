@@ -1,8 +1,10 @@
-﻿import { Worker, Job } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import { config } from '../config/env';
 import { scrapeListings } from '../services/scraperService';
 import { setCachedListings, clearJobInFlight } from '../services/cacheService';
 import { Listing } from '../types/listing';
+
+const WORKER_ID = process.env.SCRAPER_WORKER_ID || 'worker-default';
 
 export interface ScraperJobData {
     query: string;
@@ -22,7 +24,7 @@ if (!config.redis.useMock) {
         async (job: Job<ScraperJobData>) => {
             const { query, marketplace, maxItems = 60 } = job.data;
             console.log(
-                `[ScraperWorker] Processing job ${job.id}: query="${query}", marketplace="${marketplace || 'all'}", maxItems="${maxItems}"`
+                `[ScraperWorker][${WORKER_ID}] Processing job ${job.id}: query="${query}", marketplace="${marketplace || 'all'}", maxItems="${maxItems}"`
             );
 
             try {
@@ -42,19 +44,19 @@ if (!config.redis.useMock) {
                 host: config.redis.host,
                 port: config.redis.port,
             },
-            concurrency: 5,
+            concurrency: 1,
         }
     );
 
     scraperWorker.on('completed', (job: Job<ScraperJobData> | undefined, result: ScraperJobResult) => {
-        console.log(`[ScraperWorker] Job ${job?.id} completed with ${result.listings.length} listings`);
+        console.log(`[ScraperWorker][${WORKER_ID}] Job ${job?.id} completed with ${result.listings.length} listings`);
     });
 
     scraperWorker.on('failed', (job: Job<ScraperJobData> | undefined, err: Error) => {
-        console.error(`[ScraperWorker] Job ${job?.id} failed:`, err.message);
+        console.error(`[ScraperWorker][${WORKER_ID}] Job ${job?.id} failed:`, err.message);
     });
 
-    console.log('[ScraperWorker] Worker started, waiting for jobs...');
+    console.log(`[ScraperWorker][${WORKER_ID}] Worker started, waiting for jobs...`);
 } else {
     console.log('[ScraperWorker] Worker disabled (Mock Mode)');
 }

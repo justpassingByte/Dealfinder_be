@@ -9,8 +9,9 @@
 import redis from '../config/redis';
 import { generateSignatures, SignatureResult } from './signatureService';
 import * as catalog from './catalogRepository';
-import { scrapeListings } from './scraperService';
 import { Listing } from '../types/listing';
+import { scraperQueue } from '../config/queue';
+import { QueueEvents } from 'bullmq';
 import { Product, ProductVariant, PersistedListing } from '../types/product';
 import { compareListings } from './compareService';
 
@@ -26,9 +27,46 @@ const cacheKey = {
     product: (id: string) => `df:product:${id}`,
     variantListings: (vid: string) => `df:variant:${vid}:listings`,
     scrapeLock: (sig: string) => `df:scrape_lock:${sig}`,
-    globalBrowserLock: () => 'df:global_browser_lock',
     searchCount: (pid: string) => `df:search_count:${pid}`,
 };
+
+// ── Queue-based scraping ──────────────────────────────
+const catalogQueueEvents = !require('../config/env').config.redis.useMock
+    ? new QueueEvents('scraper', {
+        connection: {
+            host: require('../config/env').config.redis.host,
+            port: require('../config/env').config.redis.port,
+        },
+    })
+    : null;
+
+/**
+ * Dispatch a scrape job to the BullMQ worker pool and wait for the result.
+ * This replaces the old direct `scrapeListings()` call + global browser lock.
+ */
+async function dispatchScrapeJob(
+    query: string,
+    marketplace: string,
+    maxItems: number,
+    isMaintenance: boolean
+): Promise<Listing[]> {
+    if (!scraperQueue || !catalogQueueEvents) {
+        // Fallback for mock/dev mode: import and call scrapeListings directly
+        const { scrapeListings } = require('./scraperService');
+        return scrapeListings(query, marketplace, maxItems, isMaintenance);
+    }
+
+    const job = await scraperQueue.add('catalog-search', {
+        query,
+        marketplace,
+        maxItems,
+    });
+
+    // Wait up to 3 minutes for the worker to finish.
+    const result = await job.waitUntilFinished(catalogQueueEvents, 180_000);
+    const payload = result as { listings?: Listing[] } | undefined;
+    return payload?.listings ?? [];
+}
 
 // ── Response Types ─────────────────────────────────────
 export interface CatalogSearchResult {
@@ -124,8 +162,8 @@ export async function catalogSearch(
         return result;
     }
 
-    // ── Step 3: Scraper (with concurrency guards) ─────
-    // A. Product Lock: Prevent multiple scrapes for THE SAME product
+    // ── Step 3: Scraper (with per-product dedupe guard) ─
+    // Product Lock: Prevent multiple scrapes for THE SAME product
     const productLockKey = cacheKey.scrapeLock(signatures.productSignature);
     const productLockAcquired = await redis.set(productLockKey, '1', 'EX', SCRAPE_LOCK_TTL_SECONDS, 'NX');
 
@@ -139,36 +177,13 @@ export async function catalogSearch(
         if (retryCache) return { ...JSON.parse(retryCache), source: 'cache' };
     }
 
-    // B. Global Browser Lock: Prevent multiple processes from fighting over the SAME TAB
-    const globalLockKey = cacheKey.globalBrowserLock();
-    let globalLockAcquired = false;
-
-    // Retry up to 10 times (approx 30s) to get the browser
-    for (let i = 0; i < 15; i++) {
-        globalLockAcquired = !!(await redis.set(globalLockKey, '1', 'EX', 120, 'NX'));
-        if (globalLockAcquired) break;
-
-        console.log(`[Catalog] Browser busy, waiting... (attempt ${i + 1}/15)`);
-        await new Promise(r => setTimeout(r, 2000));
-    }
-
-    if (!globalLockAcquired) {
-        // Still busy? Serve stale if we have it
-        if (product) {
-            console.warn(`[Catalog] Global lock timeout, serving stale for "${normalizedQuery}"`);
-            await redis.del(productLockKey); // Release product lock so others can try
-            return buildProductResponse(product, 'stale-fallback');
-        }
-        await redis.del(productLockKey);
-        throw new Error('Browser is currently busy with other tasks. Please try again in 1 minute.');
-    }
-
+    // Route scraping through the BullMQ worker pool (no global browser lock needed)
     try {
-        console.log(`[Catalog] Scraping for "${normalizedQuery}"...`);
+        console.log(`[Catalog] Dispatching scrape job for "${normalizedQuery}" to worker pool...`);
         let rawListings: Listing[] = [];
 
         try {
-            rawListings = await scrapeListings(normalizedQuery, 'shopee', maxItems, isMaintenance);
+            rawListings = await dispatchScrapeJob(normalizedQuery, 'shopee', maxItems, isMaintenance);
         } catch (err) {
             console.error(`[Catalog] Scraper EXCEPTION for "${normalizedQuery}":`, err);
             if (product) {
@@ -224,9 +239,8 @@ export async function catalogSearch(
             variants: [],
         };
     } finally {
-        // Release locks
+        // Release product dedupe lock
         await redis.del(productLockKey);
-        await redis.del(globalLockKey);
     }
 }
 

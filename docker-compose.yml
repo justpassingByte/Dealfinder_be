@@ -1,4 +1,36 @@
-version: "3.8"
+x-worker-base: &worker-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  command: >
+    bash -c "
+      rm -f /app/shopee_user_profile/SingletonLock
+           /app/shopee_user_profile/SingletonCookie
+           /app/shopee_user_profile/SingletonSocket;
+      chromium --headless=new
+        --remote-debugging-address=0.0.0.0
+        --remote-debugging-port=9222
+        --remote-allow-origins=*
+        --no-sandbox
+        --disable-gpu
+        --disable-dev-shm-usage
+        --window-size=1920,1080
+        --disable-blink-features=AutomationControlled
+        --user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        --user-data-dir=/app/shopee_user_profile &
+      npm run start:worker
+    "
+  env_file:
+    - .env
+  environment:
+    REDIS_HOST: redis
+    DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
+    USE_REDIS_MOCK: "false"
+    NODE_ENV: production
+  restart: unless-stopped
+  depends_on:
+    - redis
+    - postgres
 
 services:
   # PostgreSQL Database
@@ -23,30 +55,37 @@ services:
       - redis_data:/data
     restart: always
 
-  # Scraper Worker (Chrome + Proxy + Worker)
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # Chrome: Anti-detection + HD + Mở cửa mạng Docker
-    command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1920,1080 --disable-blink-features=AutomationControlled --user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' --user-data-dir=/app/shopee_user_profile & python3 /app/proxy.py & npm run start:worker"
-    env_file:
-      - .env
+  # ── Scraper Workers ──────────────────────────────────
+  # To add a 3rd worker: copy worker-2 block, rename to worker-3,
+  # change SCRAPER_WORKER_ID, profile path (_3), and host port (9224).
+
+  worker-1:
+    <<: *worker-base
+    container_name: backend-worker-1
     environment:
-      - REDIS_HOST=redis
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
-      - USE_REDIS_MOCK=false
-      - NODE_ENV=production
-    ports:
-      - "9222:9222"
-      - "9223:9223"
+      SCRAPER_WORKER_ID: worker-1
+      REDIS_HOST: redis
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
+      USE_REDIS_MOCK: "false"
+      NODE_ENV: production
     volumes:
-      - shopee_profile:/app/shopee_user_profile
-      - ./proxy.py:/app/proxy.py
-    depends_on:
-      - redis
-      - postgres
-    restart: always
+      - ./shopee_user_profile_1:/app/shopee_user_profile
+    ports:
+      - "127.0.0.1:9222:9222"
+
+  worker-2:
+    <<: *worker-base
+    container_name: backend-worker-2
+    environment:
+      SCRAPER_WORKER_ID: worker-2
+      REDIS_HOST: redis
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
+      USE_REDIS_MOCK: "false"
+      NODE_ENV: production
+    volumes:
+      - ./shopee_user_profile_2:/app/shopee_user_profile
+    ports:
+      - "127.0.0.1:9223:9222"
 
   # API Server Backend
   backend:
@@ -60,16 +99,13 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
       - USE_REDIS_MOCK=false
       - NODE_ENV=production
-      - SCRAPER_BROWSER_HOST=worker
-      - SCRAPER_BROWSER_PORT=9223
     ports:
       - "4000:4000"
-    volumes:
-      - shopee_profile:/app/shopee_user_profile
     depends_on:
       - redis
       - postgres
-      - worker
+      - worker-1
+      - worker-2
     restart: always
 
   # Web Server (Reverse Proxy + Auto SSL)
@@ -93,4 +129,3 @@ volumes:
   caddy_config:
   redis_data:
   postgres_data:
-  shopee_profile:

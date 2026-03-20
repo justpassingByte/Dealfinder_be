@@ -1,81 +1,193 @@
-# Hướng Dẫn Triển Khai DealFinder (Kiến trúc phân tán)
+# DealFinder Production Guide
 
-Kiến trúc mới nhất:
-- **Frontend:** Triển khai hoàn toàn miễn phí trên **Vercel** giúp tối ưu tốc độ load thông qua CDN toàn cầu.
-- **Backend & Database:** Triển khai độc lập trên **VPS cá nhân** (Ví dụ: VPS 4 Cores, 4GB RAM) bao gồm Node API, BullMQ Worker, trình duyệt cào dữ liệu, PostgreSQL nội bộ và Redis.
+## Architecture
 
----
-
-## Phần 1: Triển khai Backend + Database lên VPS
-
-1. **Đăng nhập vào VPS:**
-   ```bash
-   ssh root@ip_cua_vps
-   ```
-
-2. **Cài đặt Docker & Git (Nếu VPS chưa cài):**
-   ```bash
-   curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh
-   apt-get update && apt-get install git -y
-   ```
-
-3. **Clone Repo Backend:**
-   ```bash
-   mkdir -p /var/www/dealfinder && cd /var/www/dealfinder
-   git clone https://github.com/justpassingByte/Dealfinder_be.git backend
-   cd backend
-   ```
-
-4. **Cấu hình biến môi trường (`.env`):**
-   ```bash
-   cp .env.example .env
-   nano .env
-   ```
-   *Lưu ý chỉnh sửa các thông số thiết yếu sau:*
-   - `PRODUCTION_DOMAIN=api.ten_mien_cua_ban.com` (Đảm bảo đã khai báo bản ghi DNS trỏ về IP của VPS)
-   - Khai báo CSDL Postgres nội bộ (sẽ chạy trực tiếp trên VPS thay thế Supabase):
-     ```env
-     POSTGRES_USER=postgres
-     POSTGRES_PASSWORD=MatKhauChoDatabaseCuaBan123!
-     POSTGRES_DB=dealfinder
-     DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-     ```
-
-5. **Dựng Hệ Thống (Build Containers):**
-   ```bash
-   docker compose up -d --build
-   ```
-   *Quá trình này cất đi gánh nặng của NextJS, tự dựng lên PostgreSQL local, Redis, Backend (hứng API) và Worker queue.*
-
-6. **Khởi tạo Database & Chạy Migration (Rất Quan Trọng):**
-   Đợi khoảng 30s sau khi Docker chạy lên, thực thi các lệnh sau để nạp cấu trúc rỗng cho CSDL:
-   ```bash
-   docker compose exec backend npm run migrate
-   docker compose exec backend npm run migrate:catalog
-   ```
-
-7. **Bypass CAPTCHA Shopee (Giải pháp triệt để):**
-   Hệ thống sử dụng cơ chế giả lập vân tay trình duyệt (fingerprinting) và gõ phím như người thật để tránh bị Shopee block. Tuy nhiên, thi thoảng Shopee vẫn sẽ hiện CAPTCHA. Cách xử lý:
-   
-   - **Bước 1 (Trên máy tính cá nhân):** Mở Terminal/CMD và tạo SSH Tunnel để "mượn" trình duyệt đang chạy trên VPS:
-     ```bash
-     ssh -L 9223:localhost:9223 root@ip_cua_vps
-     ```
-   - **Bước 2:** Mở trình duyệt Chrome trên máy cá nhân, truy cập địa chỉ: `http://localhost:9223`.
-   - **Bước 3:** Bạn sẽ thấy danh sách các Tab đang mở trên VPS. Hãy chọn Tab Shopee đang bị kẹt CAPTCHA.
-   - **Bước 4:** Giải CAPTCHA bằng tay ngay trên trình duyệt máy bạn (reCAPTCHA hoặc kéo thanh trượt). 
-   - **Lưu ý quan trọng:** Không được đóng các Tab này! Worker được thiết kế để giữ lại Tab nhằm duy trì trạng thái đăng nhập và "độ tin cậy" (trust score) của trình duyệt đối với Shopee. 
-
-8. **Tối ưu RAM cho VPS (Quan trọng):**
-   Mỗi khi hệ thống cào xong, scraper sẽ tự động dọn dẹp cache trình duyệt và ép nhả RAM (garbage collection) để đảm bảo VPS có thể chạy ổn định lâu dài ngay cả với cấu hình thấp (2GB-4GB RAM).
+- **Frontend:** Deployed on **Vercel** (CDN, serverless).
+- **Backend:** Deployed on **VPS** — Node.js API, BullMQ job queue, PostgreSQL, Redis.
+- **Scraper Cluster:** 2 isolated worker containers (scalable to N), each with its own Chromium instance and browser profile directory. BullMQ distributes scrape jobs across workers automatically.
 
 ---
 
-## Phần 2: Triển khai Frontend lên Vercel Serverless
+## Part 1: Deploy Backend + Scraper Cluster on VPS
 
-1. Đăng nhập vào [Vercel.com](https://vercel.com) (Liên kết bằng tài khoản Github của bạn).
-2. Chọn **Add New Project**, cấp phép hiển thị repo và import thư mục React/NextJS Frontend của bạn.
-3. Trong giao diện chuẩn bị cấu hình (mục **Environment Variables**), khai báo gốc rễ API vào VPS:
-   - Tên biến: `NEXT_PUBLIC_API_URL`
-   - Giá trị: `https://api.ten_mien_cua_ban.com` (Tuyệt đối **KHÔNG CÓ** chữ `/api` phía sau nhé, vì code đã tự nối `/api` vào URL rồi).
-4. Click nút **Deploy** và nhấm nháp ly cà phê. Vercel sẽ tự động build front-end, rải nội dung khắp thế giới và chỏ ngược mọi lời gọi API data về VPS cào deal của bạn!
+### 1. SSH into the VPS
+
+```bash
+ssh root@your_vps_ip
+```
+
+### 2. Install Docker & Add Swap
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh
+apt-get update && apt-get install -y git
+
+# Add 2GB Swap (required for 3GB RAM VPS running 2+ Chromium instances)
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
+free -h  # Verify Swap: 2.0Gi should appear
+```
+
+### 3. Clone the Backend Repo
+
+```bash
+mkdir -p /var/www/dealfinder && cd /var/www/dealfinder
+git clone https://github.com/justpassingByte/Dealfinder_be.git backend
+cd backend
+```
+
+### 4. Configure Environment
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Minimum values to set:
+
+```env
+PRODUCTION_DOMAIN=api.your-domain.com
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_secure_password
+POSTGRES_DB=dealfinder
+DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+```
+
+### 5. Create Worker Profile Directories
+
+Each worker needs its own isolated Chromium profile to avoid lock-file contention:
+
+```bash
+mkdir -p shopee_user_profile_1 shopee_user_profile_2
+```
+
+> To add a 3rd worker later: `mkdir -p shopee_user_profile_3`
+
+### 6. Build & Start
+
+```bash
+docker compose up -d --build
+```
+
+This starts: PostgreSQL, Redis, Backend API (port 4000), Caddy (SSL), and **2 scraper workers** (`worker-1`, `worker-2`).
+
+### 7. Run Migrations
+
+Wait ~30 seconds for containers to initialize, then:
+
+```bash
+docker compose exec backend npm run migrate
+docker compose exec backend npm run migrate:catalog
+```
+
+### 8. Verify Workers Are Running
+
+```bash
+docker compose logs worker-1 --tail 5
+docker compose logs worker-2 --tail 5
+```
+
+You should see:
+```
+[ScraperWorker][worker-1] Worker started, waiting for jobs...
+[ScraperWorker][worker-2] Worker started, waiting for jobs...
+```
+
+---
+
+## CAPTCHA Debugging (SSH Tunnel)
+
+Debug ports are always enabled and bound to `127.0.0.1` (loopback only — not exposed publicly).
+
+### Open SSH Tunnel from your local machine:
+
+```bash
+ssh -L 9222:localhost:9222 -L 9223:localhost:9223 root@your_vps_ip
+```
+
+### Then inspect each worker's browser:
+
+| Worker | URL |
+|:-------|:----|
+| worker-1 | `http://localhost:9222` |
+| worker-2 | `http://localhost:9223` |
+
+Open the URL in Chrome on your local machine. You will see the tabs open on the VPS. Select the Shopee tab with the CAPTCHA and solve it manually.
+
+> **Note:** If one worker is blocked by CAPTCHA, the other worker continues to handle search requests normally.
+
+---
+
+## Scaling: Adding More Workers
+
+To add a 3rd worker, do the following:
+
+### 1. Create the profile directory on VPS:
+
+```bash
+mkdir -p shopee_user_profile_3
+```
+
+### 2. Add a `worker-3` block to `docker-compose.yml`:
+
+Copy the `worker-2` block and change:
+
+```yaml
+  worker-3:
+    <<: *worker-base
+    container_name: backend-worker-3
+    environment:
+      SCRAPER_WORKER_ID: worker-3
+      REDIS_HOST: redis
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-dealfinder}
+      USE_REDIS_MOCK: "false"
+      NODE_ENV: production
+    volumes:
+      - ./shopee_user_profile_3:/app/shopee_user_profile
+    ports:
+      - "127.0.0.1:9224:9222"
+```
+
+### 3. Add `worker-3` to backend depends_on and rebuild:
+
+```bash
+docker compose up -d --build
+```
+
+### 4. Update your SSH tunnel:
+
+```bash
+ssh -L 9222:localhost:9222 -L 9223:localhost:9223 -L 9224:localhost:9224 root@your_vps_ip
+```
+
+---
+
+## RAM & Resource Monitoring
+
+Each Chromium instance uses 600Mi–1Gi during active scraping.
+
+| Workers | Estimated Peak RAM | Swap Needed |
+|:--------|:-------------------|:------------|
+| 2       | ~2.1 – 2.6 Gi     | 2 Gi        |
+| 3       | ~2.6 – 3.2 Gi     | 2–4 Gi      |
+
+Monitor with:
+```bash
+watch free -h
+docker stats --no-stream
+```
+
+---
+
+## Frontend Deployment (Vercel)
+
+1. Log in to [Vercel.com](https://vercel.com) with your GitHub account.
+2. Import the frontend repo.
+3. Set environment variable: `NEXT_PUBLIC_API_URL=https://api.your-domain.com`
+4. Deploy.
+
+> Do **not** append `/api` — the frontend code already adds it.
