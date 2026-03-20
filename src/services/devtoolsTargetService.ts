@@ -1,3 +1,4 @@
+import http from 'node:http';
 import { DevtoolsStatus, DevtoolsTarget, ScraperProfile } from '../types/scraperProfile';
 
 interface ChromeTarget {
@@ -65,23 +66,50 @@ function filterVisibleTargets(targets: ChromeTarget[]): ChromeTarget[] {
         .filter((target) => !isNoiseTarget(target));
 }
 
-async function fetchChromeTargets(debugHost: string, debugPort: number): Promise<ChromeTarget[]> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+async function fetchChromeTargets(profile: ScraperProfile, debugHost: string, debugPort: number): Promise<ChromeTarget[]> {
+    const hostHeaderPort = profile.debugTunnelPort ?? profile.browserPort;
+    const hostHeader = `${profile.browserHost}:${hostHeaderPort}`;
 
-    try {
-        const response = await fetch(`http://${debugHost}:${debugPort}/json/list`, {
-            signal: controller.signal,
+    return new Promise<ChromeTarget[]>((resolve, reject) => {
+        const request = http.request({
+            host: debugHost,
+            port: debugPort,
+            path: '/json/list',
+            method: 'GET',
+            timeout: 4000,
+            headers: {
+                Host: hostHeader,
+                Connection: 'close',
+            },
+        }, (response) => {
+            let body = '';
+
+            response.setEncoding('utf8');
+            response.on('data', (chunk) => {
+                body += chunk;
+            });
+            response.on('end', () => {
+                if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
+                    reject(new Error(`Failed to fetch DevTools targets (${response.statusCode ?? 500}). Preview: ${body.slice(0, 160)}`));
+                    return;
+                }
+
+                try {
+                    resolve(JSON.parse(body) as ChromeTarget[]);
+                } catch (error) {
+                    reject(new Error(`DevTools returned invalid JSON. Preview: ${body.slice(0, 160)}`));
+                }
+            });
         });
 
-        if (!response.ok) {
-            throw new Error(`Failed to fetch DevTools targets (${response.status}).`);
-        }
-
-        return await response.json() as ChromeTarget[];
-    } finally {
-        clearTimeout(timeout);
-    }
+        request.on('timeout', () => {
+            request.destroy(new Error('DevTools request timed out.'));
+        });
+        request.on('error', (error) => {
+            reject(error);
+        });
+        request.end();
+    });
 }
 
 async function resolveChromeTargets(profile: ScraperProfile): Promise<ResolvedChromeTargets> {
@@ -90,7 +118,7 @@ async function resolveChromeTargets(profile: ScraperProfile): Promise<ResolvedCh
 
     for (const candidate of candidates) {
         try {
-            const targets = await fetchChromeTargets(candidate.host, candidate.port);
+            const targets = await fetchChromeTargets(profile, candidate.host, candidate.port);
             return {
                 debugHost: candidate.host,
                 debugPort: candidate.port,
