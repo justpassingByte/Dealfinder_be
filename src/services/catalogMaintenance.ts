@@ -63,13 +63,13 @@ export async function runMaintenanceCycle(): Promise<void> {
     await flushPopularityCounts();
 
     // 4. Refresh top products (background scrape)
-    await refreshTopProducts(20);
+    await refreshTopProducts(5);
 
     console.log('[Maintenance] Maintenance cycle complete.');
 }
 
 // ── Top Product Refresh ────────────────────────────────
-export async function refreshTopProducts(limit = 20): Promise<void> {
+export async function refreshTopProducts(limit = 5): Promise<void> {
     console.log(`[Maintenance] Starting human-paced refresh for top ${limit} products...`);
 
     const topProducts = await catalog.getTopProducts(limit);
@@ -94,8 +94,8 @@ export async function refreshTopProducts(limit = 20): Promise<void> {
                     refreshed++;
                 }
 
-                // HUMAN DELAY: Wait 15-45 seconds between products to avoid detection
-                const delay = 15000 + Math.random() * 30000;
+                // HUMAN DELAY: Wait 5-10 seconds between products to avoid detection
+                const delay = 5000 + Math.random() * 5000;
                 console.log(`[Maintenance] Sleeping for ${Math.round(delay/1000)}s to look human...`);
                 await new Promise(r => setTimeout(r, delay));
 

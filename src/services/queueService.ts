@@ -70,20 +70,20 @@ export async function setupRepeatableJobs() {
         return;
     }
 
-    // 1. Clear existing repeatable jobs to avoid duplicates on restart
-    const repeatableJobs = await catalogQueue.getRepeatableJobs();
-    for (const job of repeatableJobs) {
-        await catalogQueue.removeRepeatableByKey(job.key);
-    }
+    // 1. Only add if not already present (BullMQ handles this by pattern/name)
+    // We remove the explicit clean here because it causes the job to trigger immediately on restart
+    // if the scheduler thinks it's a "new" job.
 
     // 2. Add popularity flush (every 5 minutes)
     await catalogQueue.add('popularity-flush', {}, {
-        repeat: { pattern: '*/5 * * * *' }
+        repeat: { pattern: '*/5 * * * *' },
+        jobId: 'repeat:popularity-flush' // Stable ID to prevent duplicates
     });
 
     // 3. Add maintenance cycle (every 30 minutes)
     await catalogQueue.add('maintenance-cycle', {}, {
-        repeat: { pattern: '0,30 * * * *' }
+        repeat: { pattern: '0,30 * * * *' },
+        jobId: 'repeat:maintenance-cycle' // Stable ID to prevent duplicates
     });
 
     console.log('[Queue] Repeatable jobs scheduled (BullMQ).');
