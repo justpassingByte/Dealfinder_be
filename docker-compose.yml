@@ -2,7 +2,7 @@ x-worker-base: &worker-base
   build:
     context: .
     dockerfile: Dockerfile
-  command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1920,1080 --disable-blink-features=AutomationControlled --user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' --user-data-dir=/app/shopee_user_profile & npm run start:worker"
+  command: bash -c "rm -f /app/shopee_user_profile/SingletonLock /app/shopee_user_profile/SingletonCookie /app/shopee_user_profile/SingletonSocket; chromium --headless=new --remote-debugging-port=9222 --remote-allow-origins=* --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1920,1080 --disable-blink-features=AutomationControlled --user-agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' --user-data-dir=/app/shopee_user_profile & sleep 2 && socat TCP-LISTEN:9223,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9222 & npm run start:worker"
   env_file:
     - .env
   environment:
@@ -54,7 +54,7 @@ services:
     volumes:
       - ./shopee_user_profile:/app/shopee_user_profile
     ports:
-      - "127.0.0.1:9222:9222"
+      - "127.0.0.1:9222:9223"
 
   worker-2:
     <<: *worker-base
@@ -68,7 +68,7 @@ services:
     volumes:
       - ./shopee_user_profile_2:/app/shopee_user_profile
     ports:
-      - "127.0.0.1:9223:9222"
+      - "127.0.0.1:9223:9223"
 
   # API Server Backend
   backend:
