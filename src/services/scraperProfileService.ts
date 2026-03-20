@@ -792,15 +792,16 @@ export class ScraperProfileService {
         }
 
         const metadata = { ...profile.metadata };
-        if (nextStatus !== 'warming') {
-            delete metadata.pendingWarmupQuery;
-        }
+        // Warmup is operator-triggered in v1. Clear the queued query after each attempt
+        // so the worker does not loop forever on the maintenance interval.
+        delete metadata.pendingWarmupQuery;
 
         const nextProfile = await scraperProfileRepository.withTransaction(async (client) => {
             const updated = await scraperProfileRepository.updateProfile(profile.id, {
                 risk_score: nextRiskScore,
                 status: nextStatus,
                 warmup_success_streak: nextWarmupStreak,
+                warmup_requested_at: null,
                 last_used_at: now,
                 last_success_at: eventType === 'warmup_success' ? now : profile.lastSuccessAt,
                 last_failure_at: eventType === 'warmup_failure' ? now : profile.lastFailureAt,
