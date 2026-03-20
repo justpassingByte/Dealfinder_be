@@ -69,7 +69,7 @@ services:
       USE_REDIS_MOCK: "false"
       NODE_ENV: production
     volumes:
-      - ./shopee_user_profile_1:/app/shopee_user_profile
+      - ./shopee_user_profile:/app/shopee_user_profile
     ports:
       - "127.0.0.1:9222:9222"
 
