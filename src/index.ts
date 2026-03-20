@@ -28,6 +28,7 @@ import listingsRoutes from './routes/listings';
 import dealRoutes from './routes/deal';
 import dealsRoutes from './routes/deals';
 import trendsRoutes from './routes/trends';
+import scraperProfilesRoutes from './routes/scraperProfiles';
 
 const app = express();
 
@@ -49,6 +50,7 @@ app.use('/api', listingsRoutes);
 app.use('/api', dealRoutes);
 app.use('/api/deals', dealsRoutes);
 app.use('/api', trendsRoutes);
+app.use('/api/admin/scraper', scraperProfilesRoutes);
 
 // --------------- Error handler ---------------
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

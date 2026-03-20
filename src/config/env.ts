@@ -14,6 +14,23 @@ export const config = {
     cacheTtlSeconds: parseInt(process.env.CACHE_TTL_SECONDS || '600', 10),
     jwtSecret: process.env.JWT_SECRET || 'dealfinder-dev-secret-change-in-production',
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    scraper: {
+        adminSecret: process.env.SCRAPER_ADMIN_SECRET || '',
+        adminPublicMode: process.env.SCRAPER_ADMIN_PUBLIC_MODE === 'true',
+        heartbeatIntervalSeconds: parseInt(process.env.SCRAPER_HEARTBEAT_INTERVAL_SECONDS || '15', 10),
+        offlineTimeoutSeconds: parseInt(process.env.SCRAPER_OFFLINE_TIMEOUT_SECONDS || '90', 10),
+        riskDecayIntervalMinutes: parseInt(process.env.SCRAPER_RISK_DECAY_INTERVAL_MINUTES || '30', 10),
+        riskDecayAmount: parseInt(process.env.SCRAPER_RISK_DECAY_AMOUNT || '2', 10),
+        warmupSuccessThreshold: parseInt(process.env.SCRAPER_WARMUP_SUCCESS_THRESHOLD || '2', 10),
+        ops: {
+            vpsBasePath: process.env.SCRAPER_VPS_BASE_PATH || '/var/www/dealfinder/backend',
+            archiveBasePath: process.env.SCRAPER_VPS_ARCHIVE_PATH || '/var/www/dealfinder/backend/archive',
+            sshUser: process.env.SCRAPER_SSH_USER || 'root',
+            sshHost: process.env.SCRAPER_SSH_HOST || 'your-vps-ip',
+            sshPort: parseInt(process.env.SCRAPER_SSH_PORT || '22', 10),
+            dockerComposeDir: process.env.SCRAPER_DOCKER_COMPOSE_DIR || '/var/www/dealfinder/backend',
+        },
+    },
     shopee: {
         partnerId: parseInt(process.env.SHOPEE_PARTNER_ID || '0', 10),
         partnerKey: process.env.SHOPEE_PARTNER_KEY || '',
