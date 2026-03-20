@@ -19,7 +19,7 @@ export const config = {
         adminPublicMode: process.env.SCRAPER_ADMIN_PUBLIC_MODE === 'true',
         heartbeatIntervalSeconds: parseInt(process.env.SCRAPER_HEARTBEAT_INTERVAL_SECONDS || '15', 10),
         offlineTimeoutSeconds: parseInt(process.env.SCRAPER_OFFLINE_TIMEOUT_SECONDS || '90', 10),
-        riskDecayIntervalMinutes: parseInt(process.env.SCRAPER_RISK_DECAY_INTERVAL_MINUTES || '30', 10),
+        riskDecayIntervalMinutes: parseInt(process.env.SCRAPER_RISK_DECAY_INTERVAL_MINUTES || '10', 10),
         riskDecayAmount: parseInt(process.env.SCRAPER_RISK_DECAY_AMOUNT || '2', 10),
         warmupSuccessThreshold: parseInt(process.env.SCRAPER_WARMUP_SUCCESS_THRESHOLD || '2', 10),
         ops: {

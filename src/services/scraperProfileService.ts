@@ -123,13 +123,17 @@ export class ScraperProfileService {
         const decayAmount = Math.min(profile.riskScore, steps * config.scraper.riskDecayAmount);
         const nextRiskScore = clampRisk(profile.riskScore - decayAmount);
         const nextLastRiskUpdatedAt = new Date(lastRiskUpdatedAt + (steps * this.riskDecayIntervalMs));
-        const nextStatus = profile.status === 'cooldown' ? 'cooldown' : deriveRiskStatus(nextRiskScore);
+        const nextStatus = deriveRiskStatus(nextRiskScore);
+        const cooldownUntil = nextStatus === 'cooldown'
+            ? new Date(nextLastRiskUpdatedAt.getTime() + this.riskDecayIntervalMs)
+            : null;
 
         const updatedProfile = await scraperProfileRepository.withTransaction(async (client) => {
             const next = await scraperProfileRepository.updateProfile(profile.id, {
                 risk_score: nextRiskScore,
                 status: nextStatus,
                 last_risk_updated_at: nextLastRiskUpdatedAt,
+                cooldown_until: cooldownUntil,
             }, client);
 
             if (!next) {
