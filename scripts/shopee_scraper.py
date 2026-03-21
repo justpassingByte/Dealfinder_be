@@ -46,9 +46,6 @@ SEARCH_BUTTON_SELECTORS = (
     'button[aria-label*="Search"]',
 )
 
-SEARCH_INPUT_SELECTORS_JS = json.dumps(list(SEARCH_INPUT_SELECTORS), ensure_ascii=False)
-SEARCH_BUTTON_SELECTORS_JS = json.dumps(list(SEARCH_BUTTON_SELECTORS), ensure_ascii=False)
-
 PRODUCT_PRICE_LOCATOR = 'css:.pqTW9c, .G27LRz, ._2nzS9m'
 PRODUCT_TITLE_LOCATOR = 'css:.V_Y_S_, ._29_p48'
 
@@ -408,81 +405,67 @@ def _wait_for_document_ready(page, timeout_seconds: int = 10) -> None:
         time.sleep(0.3)
 
 
+def _selector_to_locator(selector: str) -> str:
+    lowered = selector.lower()
+    if lowered.startswith(('css:', 'xpath:', 'text:', 'tag:')):
+        return selector
+    return f'css:{selector}'
+
+
+def _find_first_element(page, selectors, timeout_each: float = 0.4):
+    for selector in selectors:
+        try:
+            element = page.ele(_selector_to_locator(selector), timeout=timeout_each)
+            if element:
+                return element
+        except Exception:
+            continue
+    return None
+
+
+def _find_item_cards(page, limit: int = 12):
+    try:
+        cards = page.eles(ITEM_LOCATOR)
+        return [card for card in cards[:limit] if card]
+    except Exception:
+        return []
+
+
 def _perform_random_warm_actions(page, query: str) -> None:
     try:
-        presence_script = """
-            const inputSelectors = __INPUT_SELECTORS__;
-            const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
-            const hasInput = inputSelectors.some((selector) => {
-                const ele = document.querySelector(selector);
-                return isVisible(ele);
-            });
-            const cards = Array.from(document.querySelectorAll('.shopee-search-item-result__item, [data-sqe="item"], a[href*="-i."]')).filter(isVisible);
-            return {
-                hasInput,
-                cardCount: cards.length,
-            };
-        """
-        presence_script = presence_script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
-        presence = page.run_js(presence_script, timeout=10)
-        has_input = bool(presence.get('hasInput')) if isinstance(presence, dict) else False
-        card_count = int(presence.get('cardCount') or 0) if isinstance(presence, dict) else 0
-
         actions = []
         action_count = random.randint(1, 3)
 
         for _ in range(action_count):
+            input_ele = _find_first_element(page, SEARCH_INPUT_SELECTORS, timeout_each=0.15)
+            cards = _find_item_cards(page, limit=12)
             candidates = ['scroll_down', 'scroll_mix']
-            if has_input:
+            if input_ele:
                 candidates.append('focus_input')
-            if card_count > 0:
+            if cards:
                 candidates.append('peek_card')
 
             action = random.choice(candidates)
             if action == 'scroll_down':
                 delta = random.randint(260, 620)
-                page.run_js("window.scrollBy({ top: arguments[0], behavior: 'auto' });", delta, timeout=5)
+                page.scroll.down(delta)
                 actions.append(f'scroll_down:{delta}')
             elif action == 'scroll_mix':
                 down = random.randint(220, 520)
                 up = random.randint(60, 180)
-                page.run_js("window.scrollBy({ top: arguments[0], behavior: 'auto' });", down, timeout=5)
+                page.scroll.down(down)
                 time.sleep(random.uniform(0.22, 0.52))
-                page.run_js("window.scrollBy({ top: arguments[0], behavior: 'auto' });", -up, timeout=5)
+                page.scroll.up(up)
                 actions.append(f'scroll_mix:{down}/{up}')
-            elif action == 'focus_input':
-                focus_script = """
-                    const inputSelectors = __INPUT_SELECTORS__;
-                    const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
-                    for (const selector of inputSelectors) {
-                        const input = document.querySelector(selector);
-                        if (isVisible(input)) {
-                            input.focus();
-                            if (typeof input.setSelectionRange === 'function') {
-                                const length = String(input.value || '').length;
-                                input.setSelectionRange(length, length);
-                            }
-                            return true;
-                        }
-                    }
-                    return false;
-                """
-                focus_script = focus_script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
-                page.run_js(focus_script, timeout=5)
+            elif action == 'focus_input' and input_ele:
+                input_ele.focus()
                 actions.append('focus_input')
-            elif action == 'peek_card':
-                peek_script = """
-                    const maxCardCount = arguments[0];
-                    const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
-                    const cards = Array.from(document.querySelectorAll('.shopee-search-item-result__item, [data-sqe="item"], a[href*="-i."]')).filter(isVisible).slice(0, maxCardCount);
-                    if (!cards.length) {
-                        return false;
-                    }
-                    const index = Math.floor(Math.random() * cards.length);
-                    cards[index].scrollIntoView({ block: 'center', behavior: 'auto' });
-                    return true;
-                """
-                page.run_js(peek_script, min(card_count, 12), timeout=5)
+            elif action == 'peek_card' and cards:
+                target_card = random.choice(cards)
+                try:
+                    page.actions.move_to(target_card, duration=random.uniform(0.18, 0.45))
+                except Exception:
+                    pass
                 actions.append('peek_card')
 
             time.sleep(random.uniform(0.42, 1.1))
@@ -512,122 +495,39 @@ def _wait_for_search_ready(page, query: str, timeout_seconds: int = 15) -> bool:
 
 def _trigger_real_search(page, query: str) -> Dict:
     try:
-        prepare_script = """
-            const inputSelectors = __INPUT_SELECTORS__;
-            const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
-            const dispatchInput = (input) => {
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            };
-            for (const selector of inputSelectors) {
-                const input = document.querySelector(selector);
-                if (isVisible(input)) {
-                    input.focus();
-                    if (typeof input.select === 'function') {
-                        input.select();
-                    }
-                    input.value = '';
-                    dispatchInput(input);
-                    return { ok: true };
-                }
-            }
-            return { ok: false, reason: 'search_input_not_found' };
-        """
-        prepare_script = prepare_script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
-        result = page.run_js(prepare_script, timeout=10)
-        if isinstance(result, dict):
-            if not result.get('ok'):
-                return result
-        elif result is False:
+        input_ele = _find_first_element(page, SEARCH_INPUT_SELECTORS, timeout_each=0.6)
+        if not input_ele:
             return {'ok': False, 'reason': 'search_input_not_found'}
 
+        input_ele.focus()
         time.sleep(random.uniform(0.12, 0.26))
 
-        append_script = """
-            const [character] = arguments;
-            const inputSelectors = __INPUT_SELECTORS__;
-            const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
-            const dispatchInput = (input) => {
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            };
-            for (const selector of inputSelectors) {
-                const input = document.querySelector(selector);
-                if (isVisible(input)) {
-                    input.focus();
-                    input.value = String(input.value || '') + String(character || '');
-                    dispatchInput(input);
-                    return true;
-                }
-            }
-            return false;
-        """
-        append_script = append_script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
+        try:
+            input_ele.clear()
+        except Exception:
+            try:
+                input_ele.input('', clear=True)
+            except Exception:
+                pass
 
         for character in query:
-            ok = page.run_js(append_script, character, timeout=10)
-            if ok is False:
-                return {'ok': False, 'reason': 'search_input_lost_during_typing'}
+            input_ele.input(character)
             time.sleep(random.uniform(0.08, 0.14))
 
         time.sleep(random.uniform(0.16, 0.32))
 
-        submit_script = """
-            const inputSelectors = __INPUT_SELECTORS__;
-            const buttonSelectors = __BUTTON_SELECTORS__;
-            const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
-            const queryVisible = (selectors, root = document) => {
-                for (const selector of selectors) {
-                    const ele = root.querySelector(selector);
-                    if (isVisible(ele)) {
-                        return ele;
-                    }
-                }
-                return null;
-            };
-            const enterEventInit = {
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true,
-            };
+        submit_btn = _find_first_element(page, SEARCH_BUTTON_SELECTORS, timeout_each=0.25)
+        if submit_btn:
+            try:
+                page.actions.move_to(submit_btn, duration=random.uniform(0.12, 0.28))
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.05, 0.18))
+            submit_btn.click()
+            return {'ok': True, 'method': 'button'}
 
-            const input = queryVisible(inputSelectors);
-            if (!input) {
-                return { ok: false, reason: 'search_input_not_found' };
-            }
-
-            const form = input.closest('form');
-            const submitBtn = queryVisible(buttonSelectors, form || document);
-            if (submitBtn) {
-                submitBtn.click();
-                return { ok: true, method: 'button' };
-            }
-
-            input.dispatchEvent(new KeyboardEvent('keydown', enterEventInit));
-            input.dispatchEvent(new KeyboardEvent('keypress', enterEventInit));
-            input.dispatchEvent(new KeyboardEvent('keyup', enterEventInit));
-
-            if (form && typeof form.requestSubmit === 'function') {
-                form.requestSubmit();
-                return { ok: true, method: 'requestSubmit' };
-            }
-
-            if (form) {
-                form.submit();
-                return { ok: true, method: 'submit' };
-            }
-
-            return { ok: true, method: 'enter' };
-        """
-        submit_script = submit_script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
-        submit_script = submit_script.replace('__BUTTON_SELECTORS__', SEARCH_BUTTON_SELECTORS_JS)
-        result = page.run_js(submit_script, timeout=10)
-        if isinstance(result, dict):
-            return result
-        return {'ok': bool(result), 'method': 'unknown'}
+        page.actions.type('\n', interval=0)
+        return {'ok': True, 'method': 'enter'}
     except Exception as err:
         return {'ok': False, 'reason': str(err)}
 
