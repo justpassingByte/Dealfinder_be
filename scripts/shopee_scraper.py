@@ -1,8 +1,9 @@
 """
 Shopee worker runtime using DrissionPage.
 
-- Keyword searches: try Shopee search API first inside the live browser context.
-- Fallback: use DOM extraction in the same browser/tab if API fails.
+- Keyword searches: try Shopee search API first inside the live browser session
+  without forcing a navigation to the search results page.
+- Fallback: navigate to the search results page only if DOM extraction is needed.
 - Direct URLs: keep using product-page extraction.
 - Output: structured JSON to stdout, diagnostics to stderr only.
 """
@@ -14,7 +15,7 @@ import re
 import sys
 import time
 from typing import Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 
@@ -313,12 +314,47 @@ def _search_url(query: str) -> str:
     return f'https://shopee.vn/search?keyword={quote(query)}'
 
 
+def _dismiss_common_popups(page) -> None:
+    try:
+        for selector in ('css:.shopee-popup__close-btn', 'css:.shopee-modal__close'):
+            close_btn = page.ele(selector, timeout=0.5)
+            if close_btn:
+                close_btn.click()
+    except Exception:
+        pass
+
+
+def _is_storefront_origin(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except Exception:
+        return False
+    return host in ('shopee.vn', 'www.shopee.vn')
+
+
+def _ensure_storefront_origin(page) -> None:
+    current_url = page.url or ''
+
+    if not _is_storefront_origin(current_url):
+        print('[Scraper] Navigating to Shopee storefront to establish same-origin session', file=sys.stderr)
+        page.get('https://shopee.vn/')
+        time.sleep(random.uniform(1.5, 3.0))
+    else:
+        try:
+            page.scroll.to_top()
+        except Exception:
+            pass
+
+    _dismiss_common_popups(page)
+
+
 def _ensure_search_page(page, query: str) -> None:
+    current_url = page.url or ''
     encoded_query = quote(query)
     search_url = _search_url(query)
 
-    if encoded_query not in (page.url or ''):
-        print(f'[Scraper] Navigating to search URL for "{query}"', file=sys.stderr)
+    if '/search' not in current_url or encoded_query not in current_url:
+        print(f'[Scraper] Navigating to search URL for DOM fallback: "{query}"', file=sys.stderr)
         page.get(search_url)
         time.sleep(random.uniform(1.5, 3.0))
     else:
@@ -327,13 +363,7 @@ def _ensure_search_page(page, query: str) -> None:
         except Exception:
             pass
 
-    try:
-        for selector in ('css:.shopee-popup__close-btn', 'css:.shopee-modal__close'):
-            close_btn = page.ele(selector, timeout=0.5)
-            if close_btn:
-                close_btn.click()
-    except Exception:
-        pass
+    _dismiss_common_popups(page)
 
 
 def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
@@ -648,7 +678,7 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             listings = _extract_product_page(page, query)
             return _build_runtime_result(listings=listings, channel='dom')
 
-        _ensure_search_page(page, query)
+        _ensure_storefront_origin(page)
 
         if not _handle_captcha(page):
             return _build_runtime_result(blocked=True, error='CAPTCHA detected before API attempt')
@@ -661,6 +691,8 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
             f"[Scraper][API] Falling back to DOM for '{query}': {api_result.get('apiFailureReason') or api_result.get('error')}",
             file=sys.stderr,
         )
+
+        _ensure_search_page(page, query)
 
         if not _handle_captcha(page):
             return _build_runtime_result(
