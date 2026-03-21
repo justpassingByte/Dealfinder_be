@@ -310,7 +310,23 @@ def _normalize_api_listing(item: Dict) -> Optional[Dict]:
     }
 
 
-def _extract_api_items(data: Dict) -> Optional[List[Dict]]:
+def _looks_like_api_item(value) -> bool:
+    return isinstance(value, dict) and isinstance(value.get('item_basic'), dict)
+
+
+def _extract_api_items(data, depth: int = 0) -> Optional[List[Dict]]:
+    if depth > 4:
+        return None
+
+    if isinstance(data, list):
+        if data and all(_looks_like_api_item(item) for item in data):
+            return data
+        for item in data:
+            nested_items = _extract_api_items(item, depth + 1)
+            if nested_items:
+                return nested_items
+        return None
+
     if not isinstance(data, dict):
         return None
 
@@ -322,6 +338,23 @@ def _extract_api_items(data: Dict) -> Optional[List[Dict]]:
     if isinstance(nested_data, dict):
         nested_items = nested_data.get('items')
         if isinstance(nested_items, list):
+            return nested_items
+
+    numeric_entries = []
+    for key, value in data.items():
+        if str(key).isdigit() and _looks_like_api_item(value):
+            try:
+                numeric_entries.append((int(key), value))
+            except Exception:
+                numeric_entries.append((len(numeric_entries), value))
+
+    if numeric_entries:
+        numeric_entries.sort(key=lambda pair: pair[0])
+        return [value for _, value in numeric_entries]
+
+    for value in data.values():
+        nested_items = _extract_api_items(value, depth + 1)
+        if nested_items:
             return nested_items
 
     return None
@@ -518,7 +551,8 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
         items = _extract_api_items(data)
         if not isinstance(items, list):
             data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) or 'no keys'
-            api_failure_reason = f'Shopee API payload did not include an items array (keys: {data_keys})'
+            error_value = data.get('error')
+            api_failure_reason = f'Shopee API payload did not include an items array (error: {error_value}; keys: {data_keys})'
             if page_idx == 0:
                 return _build_runtime_result(
                     channel=None,
