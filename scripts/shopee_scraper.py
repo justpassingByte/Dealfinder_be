@@ -33,6 +33,9 @@ API_MAX_DELAY_SECONDS = 2.8
 
 SEARCH_INPUT_SELECTORS = (
     'input.shopee-searchbar-input__input',
+    '.shopee-searchbar input',
+    'input[name="keyword"]',
+    'input[aria-label*="Search"]',
     'input[placeholder*="Tìm"]',
     'input[placeholder*="tìm"]',
     'input[placeholder*="Search"]',
@@ -594,7 +597,7 @@ def _ensure_search_ready(page, query: str, force_rebuild: bool = False) -> Dict:
             context['state'] = 'search_ready'
             return context
 
-    _ensure_storefront_origin(page)
+    _ensure_storefront_origin(page, force_homepage=force_rebuild)
 
     if not _handle_captcha(page):
         return {
@@ -605,14 +608,20 @@ def _ensure_search_ready(page, query: str, force_rebuild: bool = False) -> Dict:
     _perform_random_warm_actions(page, query)
 
     bootstrap_result = _trigger_real_search(page, query)
-    if not bootstrap_result.get('ok'):
+    if not bootstrap_result.get('ok') and bootstrap_result.get('reason') == 'search_input_not_found':
         print(
-            f"[Scraper][Warm] Real search bootstrap failed for '{query}': {bootstrap_result.get('reason')}",
+            f"[Scraper][Warm] Search input not found during bootstrap for '{query}', retrying from homepage",
             file=sys.stderr,
         )
-        page.get(_search_url(query))
-        _wait_for_document_ready(page)
-        time.sleep(random.uniform(1.2, 2.2))
+        _ensure_storefront_origin(page, force_homepage=True)
+        _perform_random_warm_actions(page, query)
+        bootstrap_result = _trigger_real_search(page, query)
+
+    if not bootstrap_result.get('ok'):
+        return {
+            'state': 'failed',
+            'error': f"Real search bootstrap failed: {bootstrap_result.get('reason')}",
+        }
 
     if not _wait_for_search_ready(page, query):
         return {
@@ -641,14 +650,23 @@ def _is_storefront_origin(url: str) -> bool:
     return host in ('shopee.vn', 'www.shopee.vn')
 
 
-def _ensure_storefront_origin(page) -> None:
+def _open_storefront_homepage(page, reason: Optional[str] = None) -> None:
+    if reason:
+        print(reason, file=sys.stderr)
+    page.get('https://shopee.vn/')
+    _wait_for_document_ready(page)
+    time.sleep(random.uniform(1.5, 3.0))
+    _dismiss_common_popups(page)
+    _wait_for_document_ready(page)
+
+
+def _ensure_storefront_origin(page, force_homepage: bool = False) -> None:
     current_url = page.url or ''
 
-    if not _is_storefront_origin(current_url):
-        print('[Scraper] Navigating to Shopee storefront to establish same-origin session', file=sys.stderr)
-        page.get('https://shopee.vn/')
-        _wait_for_document_ready(page)
-        time.sleep(random.uniform(1.5, 3.0))
+    if force_homepage:
+        _open_storefront_homepage(page, '[Scraper] Navigating to Shopee homepage to rebuild search context')
+    elif not _is_storefront_origin(current_url):
+        _open_storefront_homepage(page, '[Scraper] Navigating to Shopee storefront to establish same-origin session')
     else:
         try:
             page.scroll.to_top()
@@ -788,8 +806,17 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
     listings: List[Dict] = []
     seen_keys = set()
     api_failure_reason: Optional[str] = None
-    search_context = _ensure_search_ready(page, query)
+    search_context = _extract_search_context(page) if _is_storefront_origin(page.url or '') else {}
     context_rebuilt = False
+
+    if not _handle_captcha(page):
+        return _build_runtime_result(
+            channel=None,
+            blocked=True,
+            api_attempted=False,
+            api_failure_reason='CAPTCHA detected before API attempt',
+            error='CAPTCHA detected before API attempt',
+        )
 
     if search_context.get('error'):
         return _build_runtime_result(
@@ -811,7 +838,6 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
         if page_idx > 0:
             time.sleep(random.uniform(API_MIN_DELAY_SECONDS, API_MAX_DELAY_SECONDS))
 
-        _perform_random_warm_actions(page, query)
         payload = _fetch_api_page(page, query, limit, newest, search_context)
 
         if payload.get('runtimeError'):
@@ -883,7 +909,6 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
                         error=api_failure_reason,
                     )
 
-                _perform_random_warm_actions(page, query)
                 time.sleep(random.uniform(API_MIN_DELAY_SECONDS, API_MAX_DELAY_SECONDS))
                 payload = _fetch_api_page(page, query, limit, newest, search_context)
                 data = payload.get('data')
