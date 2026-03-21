@@ -1,22 +1,53 @@
 """
-Robust Shopee scraper using DrissionPage.
-- Fetches multiple search pages and scrolls each page.
-- Returns raw listings as JSON on stdout.
-- Prints diagnostics to stderr only.
+Shopee worker runtime using DrissionPage.
+
+- Keyword searches: try Shopee search API first inside the live browser context.
+- Fallback: use DOM extraction in the same browser/tab if API fails.
+- Direct URLs: keep using product-page extraction.
+- Output: structured JSON to stdout, diagnostics to stderr only.
 """
 
-import sys
 import json
 import os
+import random
+import re
+import sys
 import time
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 
 ITEM_LOCATOR = 'css:.shopee-search-item-result__item, [data-sqe="item"], a[href*="-i."]'
 TITLE_LOCATOR = 'css:.line-clamp-2, [data-sqe="name"], div.truncate'
 LINK_LOCATOR = 'css:a[href*="-i."], a'
-SHOP_EXCLUDE_WORDS = {'ad', 'sponsored', 'mall', 'yêu thích', 'tài trợ', 'tìm sản phẩm', 'tìm', 'sản phẩm', 'tương tự', 'shopee'}
+
+API_PAGE_SIZE = 60
+MAX_API_PAGES = 3
+API_TIMEOUT_SECONDS = 15
+
+PRODUCT_PRICE_LOCATOR = 'css:.pqTW9c, .G27LRz, ._2nzS9m'
+PRODUCT_TITLE_LOCATOR = 'css:.V_Y_S_, ._29_p48'
+
+
+def _build_runtime_result(
+    listings: Optional[List[Dict]] = None,
+    channel: Optional[str] = None,
+    blocked: bool = False,
+    api_attempted: bool = False,
+    api_failure_reason: Optional[str] = None,
+    valid_empty_result: bool = False,
+    error: Optional[str] = None,
+) -> Dict:
+    return {
+        'listings': listings or [],
+        'channel': channel,
+        'blocked': blocked,
+        'apiAttempted': api_attempted,
+        'apiFailureReason': api_failure_reason,
+        'validEmptyResult': valid_empty_result,
+        'error': error,
+    }
 
 
 def _extract_title(item) -> str:
@@ -24,68 +55,60 @@ def _extract_title(item) -> str:
     if title_ele and title_ele.text:
         return title_ele.text.strip()
 
-    title = "No Title"
-    for line in [t.strip() for t in item.text.split('\n') if t.strip()]:
+    for line in [text.strip() for text in item.text.split('\n') if text.strip()]:
         lower = line.lower()
         if len(line) > 10 and 'sold' not in lower:
-            title = line
-            break
+            return line
 
-    return title
+    return 'No Title'
 
 
 def _extract_url(item) -> str:
-    url = ""
+    url = ''
     if item.tag == 'a':
-        url = item.attr('href') or ""
+        url = item.attr('href') or ''
     else:
         link_ele = item.ele(LINK_LOCATOR, timeout=0)
         if link_ele:
-            url = link_ele.attr('href') or ""
+            url = link_ele.attr('href') or ''
 
     if url and not url.startswith('http'):
-        url = f"https://shopee.vn{url}"
+        url = f'https://shopee.vn{url}'
     return url
 
 
 def _extract_image(item) -> str:
     img_ele = item.ele('css:img', timeout=0)
     if not img_ele:
-        return ""
+        return ''
 
-    src = img_ele.attr('src') or ""
+    src = img_ele.attr('src') or ''
     if not src or 'blank.gif' in src:
         src = img_ele.attr('data-src') or src
 
-    return src or ""
+    return src or ''
 
-
-import re
 
 def _parse_number_fragment(text: str) -> int:
     if not text:
         return 0
 
-    # Look for digits, possibly with separators (dots or commas)
-    # Target formats: 1.000.000, 1,000,000, 1000000
-    # Avoid picking up strings that are just a list of model numbers
     matches = re.findall(r'\b\d{1,3}(?:[\.,]\d{3})+\b|\b\d{4,9}\b', text)
     if not matches:
         return 0
 
-    # Pick the largest one that looks like a valid price, but avoid absurdly long digit strings
     valid_prices = []
-    for m in matches:
-        clean = re.sub(r'[\.,]', '', m)
-        if len(clean) > 12: # Skip obviously fake large numbers (trillion+)
+    for match in matches:
+        clean = re.sub(r'[\.,]', '', match)
+        if len(clean) > 12:
             continue
         try:
-            val = int(clean)
-            if 1000 <= val <= 300000000: # 1k to 300M range is safe for most items
-                valid_prices.append(val)
-        except:
+            value = int(clean)
+            if 1000 <= value <= 300000000:
+                valid_prices.append(value)
+        except Exception:
             continue
-            
+
     return max(valid_prices) if valid_prices else 0
 
 
@@ -94,12 +117,11 @@ def _parse_sold(raw: str) -> int:
     if 'sold' not in lower and 'bán' not in lower and 'ban' not in lower:
         return 0
 
-    # Only extract digits and multipliers
-    num_match = re.search(r'([\d\.,]+)', lower)
-    if not num_match:
+    match = re.search(r'([\d\.,]+)', lower)
+    if not match:
         return 0
 
-    num_text = num_match.group(1).replace(',', '.')
+    num_text = match.group(1).replace(',', '.')
     try:
         value = float(num_text)
         if 'k' in lower:
@@ -107,7 +129,7 @@ def _parse_sold(raw: str) -> int:
         elif 'tr' in lower or 'm' in lower:
             value *= 1000000
         return int(value)
-    except:
+    except Exception:
         return 0
 
 
@@ -117,19 +139,17 @@ def _extract_listing(item) -> Optional[Dict]:
         url = _extract_url(item)
         image = _extract_image(item)
 
-        lines = [t.strip() for t in item.text.split('\n') if t.strip()]
+        lines = [text.strip() for text in item.text.split('\n') if text.strip()]
         price = 0
         rating = 0.0
         sold = 0
         shop = 'Shopee'
 
-        # 1. Extract Price
         for line in lines:
             candidate_price = _parse_number_fragment(line)
             if candidate_price > price:
                 price = candidate_price
 
-        # 2. Extract Rating & Sold
         for idx, line in enumerate(lines):
             lower = line.lower()
             if 'sold' in lower or 'bán' in lower or 'ban' in lower:
@@ -141,12 +161,10 @@ def _extract_listing(item) -> Optional[Dict]:
                             rating = candidate_rating
                     except ValueError:
                         pass
-        
-        # Fallback for rating if not found but item has sales
+
         if rating == 0.0:
             rating = 5.0
 
-        # 3. Extract Location (Shopee cards show location, not shop name)
         clean_lines = []
         for line in lines:
             lower = line.lower()
@@ -157,17 +175,17 @@ def _extract_listing(item) -> Optional[Dict]:
             if 'sold' in lower or 'bán' in lower or 'ban' in lower:
                 continue
             try:
-                val = float(line.replace(',', '.'))
-                if 0.0 <= val <= 5.0:
+                value = float(line.replace(',', '.'))
+                if 0.0 <= value <= 5.0:
                     continue
-            except:
+            except Exception:
                 pass
             if line.startswith('-') and line.endswith('%'):
                 continue
             clean_lines.append(line)
 
         if clean_lines:
-            shop = clean_lines[-1] # Usually location like 'Hà Nội' or 'Nước ngoài'
+            shop = clean_lines[-1]
 
         return {
             'title': title,
@@ -177,9 +195,10 @@ def _extract_listing(item) -> Optional[Dict]:
             'rating': rating,
             'sold': sold,
             'shop': shop,
+            'marketplace': 'shopee',
         }
     except Exception as err:
-        print(f"Error parsing item: {err}", file=sys.stderr)
+        print(f'Error parsing item: {err}', file=sys.stderr)
         return None
 
 
@@ -191,227 +210,488 @@ def _wait_for_items(page) -> bool:
         return False
 
 
-def _scroll_page(page, max_scrolls: int = 5) -> None:
-    for _ in range(max_scrolls):
+def _human_scroll(page, steps: Optional[int] = None) -> None:
+    steps = steps or random.randint(3, 6)
+    for _ in range(steps):
+        distance = random.randint(300, 800)
         try:
-            page.scroll.to_bottom()
-            page.wait.load_start(timeout=2)
+            page.scroll.down(distance)
+        except Exception:
+            try:
+                page.scroll.to_bottom()
+            except Exception:
+                pass
+        time.sleep(random.uniform(0.5, 1.3))
+        if random.random() < 0.3:
+            try:
+                page.scroll.up(random.randint(100, 300))
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.2, 0.7))
+
+
+def _handle_captcha(page) -> bool:
+    title = (page.title or '').lower()
+    if not any(keyword in title for keyword in ['captcha', 'verify', 'robot']):
+        return True
+
+    print('[Scraper] CAPTCHA detected. Waiting for manual recovery...', file=sys.stderr)
+    for _ in range(120):
+        time.sleep(1)
+        title = (page.title or '').lower()
+        if not any(keyword in title for keyword in ['captcha', 'verify', 'robot']):
+            return True
+    return False
+
+
+def _normalize_api_price(value) -> int:
+    try:
+        return int(float(value) / 100000)
+    except Exception:
+        return 0
+
+
+def _normalize_api_rating(item_basic: Dict) -> float:
+    item_rating = item_basic.get('item_rating')
+    if isinstance(item_rating, dict):
+        try:
+            return float(item_rating.get('rating_star') or 0)
+        except Exception:
+            return 0.0
+
+    try:
+        return float(item_basic.get('rating_star') or 0)
+    except Exception:
+        return 0.0
+
+
+def _normalize_api_sold(item_basic: Dict) -> int:
+    for key in ('historical_sold', 'sold'):
+        try:
+            value = item_basic.get(key)
+            if value is not None:
+                return int(value)
+        except Exception:
+            continue
+    return 0
+
+
+def _build_image_url(image_id: str) -> str:
+    if not image_id:
+        return ''
+    if image_id.startswith('http'):
+        return image_id
+    return f'https://cf.shopee.vn/file/{image_id}'
+
+
+def _normalize_api_listing(item: Dict) -> Optional[Dict]:
+    item_basic = item.get('item_basic') if isinstance(item, dict) else None
+    if not isinstance(item_basic, dict):
+        return None
+
+    name = item_basic.get('name')
+    shopid = item_basic.get('shopid') or item_basic.get('shop_id')
+    itemid = item_basic.get('itemid') or item_basic.get('item_id')
+    price = _normalize_api_price(item_basic.get('price'))
+
+    if not name or not shopid or not itemid or price <= 0:
+        return None
+
+    return {
+        'title': str(name),
+        'price': price,
+        'url': f'https://shopee.vn/product/{shopid}/{itemid}',
+        'image': _build_image_url(str(item_basic.get('image') or '')),
+        'rating': _normalize_api_rating(item_basic),
+        'sold': _normalize_api_sold(item_basic),
+        'shop': str(item_basic.get('shop_name') or shopid),
+        'marketplace': 'shopee',
+    }
+
+
+def _search_url(query: str) -> str:
+    return f'https://shopee.vn/search?keyword={quote(query)}'
+
+
+def _ensure_search_page(page, query: str) -> None:
+    encoded_query = quote(query)
+    search_url = _search_url(query)
+
+    if encoded_query not in (page.url or ''):
+        print(f'[Scraper] Navigating to search URL for "{query}"', file=sys.stderr)
+        page.get(search_url)
+        time.sleep(random.uniform(1.5, 3.0))
+    else:
+        try:
+            page.scroll.to_top()
         except Exception:
             pass
-        time.sleep(0.9)
 
-
-import random
-
-def _human_scroll(page, steps=None):
-    """Scroll down in steps like a human would, often stopping to 'read'."""
-    if steps is None:
-        steps = random.randint(3, 6)
-        
-    for _ in range(steps):
-        # Random scroll distance
-        distance = random.randint(300, 800)
-        page.scroll.down(distance)
-        # Random wait after scrolling
-        time.sleep(random.uniform(0.5, 1.5))
-        # 30% chance of scrolling back up a little bit (as if re-reading)
-        if random.random() < 0.3:
-            page.scroll.up(random.randint(100, 300))
-            time.sleep(random.uniform(0.3, 0.8))
-
-def _random_mouse_behavior(page):
-    """Hover over some elements to simulate interest."""
     try:
-        # Find some random items or links to hover
-        elements = page.eles('css:a, button, .shopee-search-item-result__item')
-        if elements:
-            to_hover = random.sample(elements, min(len(elements), 3))
-            for el in to_hover:
-                try:
-                    page.actions.move_to(el)
-                    time.sleep(random.uniform(0.2, 0.6))
-                except:
-                    pass
-    except:
+        for selector in ('css:.shopee-popup__close-btn', 'css:.shopee-modal__close'):
+            close_btn = page.ele(selector, timeout=0.5)
+            if close_btn:
+                close_btn.click()
+    except Exception:
         pass
+
+
+def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
+    script = """
+        const [keyword, limit, newest] = arguments;
+        const params = new URLSearchParams({
+            by: 'relevancy',
+            keyword,
+            limit: String(limit),
+            newest: String(newest),
+            order: 'desc',
+            page_type: 'search',
+            scenario: 'PAGE_GLOBAL_SEARCH',
+            version: '2',
+        });
+
+        return fetch(`/api/v4/search/search_items?${params.toString()}`, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+                'accept': 'application/json',
+                'x-api-source': 'pc',
+                'x-requested-with': 'XMLHttpRequest',
+                'x-shopee-language': 'vi',
+            },
+        }).then(async (response) => {
+            const text = await response.text();
+            let data = null;
+            try {
+                data = JSON.parse(text);
+            } catch (error) {
+                data = null;
+            }
+            return {
+                ok: response.ok,
+                status: response.status,
+                contentType: response.headers.get('content-type') || '',
+                data,
+                textSnippet: text.slice(0, 600),
+            };
+        }).catch((error) => ({
+            ok: false,
+            status: 0,
+            contentType: '',
+            data: null,
+            textSnippet: String(error),
+            runtimeError: String(error),
+        }));
+    """
+
+    try:
+        result = page.run_js(script, query, limit, newest, timeout=API_TIMEOUT_SECONDS)
+    except Exception as err:
+        return {
+            'ok': False,
+            'status': 0,
+            'contentType': '',
+            'data': None,
+            'textSnippet': str(err),
+            'runtimeError': str(err),
+        }
+
+    if isinstance(result, dict):
+        return result
+
+    return {
+        'ok': False,
+        'status': 0,
+        'contentType': '',
+        'data': None,
+        'textSnippet': 'Unexpected API result shape',
+        'runtimeError': 'Unexpected API result shape',
+    }
+
+
+def _search_via_api(page, query: str, max_items: int) -> Dict:
+    target_items = min(max_items, API_PAGE_SIZE * MAX_API_PAGES)
+    page_count = max(1, min(MAX_API_PAGES, (target_items + API_PAGE_SIZE - 1) // API_PAGE_SIZE))
+    listings: List[Dict] = []
+    seen_keys = set()
+    api_failure_reason: Optional[str] = None
+
+    for page_idx in range(page_count):
+        remaining = target_items - len(listings)
+        if remaining <= 0:
+            break
+
+        limit = min(API_PAGE_SIZE, remaining)
+        newest = page_idx * API_PAGE_SIZE
+        payload = _fetch_api_page(page, query, limit, newest)
+
+        if payload.get('runtimeError'):
+            api_failure_reason = str(payload.get('runtimeError'))
+            if page_idx == 0:
+                return _build_runtime_result(
+                    channel=None,
+                    api_attempted=True,
+                    api_failure_reason=api_failure_reason,
+                    error=api_failure_reason,
+                )
+            break
+
+        status = int(payload.get('status') or 0)
+        content_type = str(payload.get('contentType') or '').lower()
+        text_snippet = str(payload.get('textSnippet') or '')
+        lower_snippet = text_snippet.lower()
+
+        if not payload.get('ok'):
+            api_failure_reason = f'API request failed with status {status}'
+            if 'captcha' in lower_snippet or 'robot' in lower_snippet:
+                api_failure_reason = f'{api_failure_reason} (captcha)'
+            if page_idx == 0:
+                return _build_runtime_result(
+                    channel=None,
+                    api_attempted=True,
+                    api_failure_reason=api_failure_reason,
+                    error=api_failure_reason,
+                )
+            break
+
+        if 'json' not in content_type and not isinstance(payload.get('data'), dict):
+            api_failure_reason = 'Shopee API returned non-JSON content'
+            if page_idx == 0:
+                return _build_runtime_result(
+                    channel=None,
+                    api_attempted=True,
+                    api_failure_reason=api_failure_reason,
+                    error=api_failure_reason,
+                )
+            break
+
+        data = payload.get('data')
+        if not isinstance(data, dict):
+            api_failure_reason = 'Shopee API returned an invalid JSON payload'
+            if page_idx == 0:
+                return _build_runtime_result(
+                    channel=None,
+                    api_attempted=True,
+                    api_failure_reason=api_failure_reason,
+                    error=api_failure_reason,
+                )
+            break
+
+        items = data.get('items')
+        if not isinstance(items, list):
+            api_failure_reason = 'Shopee API payload did not include an items array'
+            if page_idx == 0:
+                return _build_runtime_result(
+                    channel=None,
+                    api_attempted=True,
+                    api_failure_reason=api_failure_reason,
+                    error=api_failure_reason,
+                )
+            break
+
+        if page_idx == 0 and len(items) == 0:
+            return _build_runtime_result(
+                listings=[],
+                channel='api',
+                api_attempted=True,
+                api_failure_reason=None,
+                valid_empty_result=True,
+            )
+
+        page_listings = []
+        for item in items:
+            listing = _normalize_api_listing(item)
+            if listing:
+                page_listings.append(listing)
+
+        if len(items) > 0 and not page_listings:
+            api_failure_reason = 'Shopee API payload was missing required listing fields'
+            if page_idx == 0:
+                return _build_runtime_result(
+                    channel=None,
+                    api_attempted=True,
+                    api_failure_reason=api_failure_reason,
+                    error=api_failure_reason,
+                )
+            break
+
+        for listing in page_listings:
+            key = f"{listing.get('url', '')}|{listing.get('price', 0)}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            listings.append(listing)
+
+        if len(page_listings) < limit:
+            break
+
+    return _build_runtime_result(
+        listings=listings[:target_items],
+        channel='api',
+        api_attempted=True,
+        api_failure_reason=api_failure_reason,
+        valid_empty_result=False,
+    )
+
+
+def _extract_product_page(page, query: str) -> List[Dict]:
+    print('[Scraper] Direct Mode: navigating to product page...', file=sys.stderr)
+    page.get(query)
+    time.sleep(random.uniform(2.0, 4.0))
+
+    price_ele = page.ele(PRODUCT_PRICE_LOCATOR, timeout=5)
+    title_ele = page.ele(PRODUCT_TITLE_LOCATOR, timeout=5)
+
+    price_text = price_ele.text if price_ele else '0'
+    price = _parse_number_fragment(price_text)
+
+    return [{
+        'title': title_ele.text if title_ele else 'Unknown Product',
+        'price': price,
+        'url': query,
+        'image': '',
+        'rating': 5.0,
+        'sold': 0,
+        'shop': 'Shopee',
+        'marketplace': 'shopee',
+    }]
+
+
+def _collect_dom_search_results(page, max_items: int) -> List[Dict]:
+    if not _wait_for_items(page):
+        return []
+
+    _human_scroll(page, steps=random.randint(4, 6))
+    time.sleep(1)
+
+    results: List[Dict] = []
+    seen_keys = set()
+    items = page.eles(ITEM_LOCATOR)
+    for item in items:
+        if len(results) >= max_items:
+            break
+        listing = _extract_listing(item)
+        if not listing:
+            continue
+        key = f"{listing.get('url', '')}|{listing.get('price', 0)}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        results.append(listing)
+
+    return results[:max_items]
+
+
+def _ensure_worker_tab(browser, is_maintenance: bool):
+    while len(browser.tab_ids) < 2:
+        browser.new_tab()
+
+    tab_ids = browser.tab_ids
+    while len(tab_ids) > 2:
+        try:
+            browser.get_tab(tab_ids[-1]).close()
+        except Exception:
+            pass
+        tab_ids = browser.tab_ids
+
+    target_tab_id = tab_ids[1] if is_maintenance else tab_ids[0]
+    page = browser.get_tab(target_tab_id)
+
+    try:
+        browser.set.tab_to_front(target_tab_id)
+    except Exception:
+        pass
+
+    return page
+
 
 def get_consistent_ua(profile_path: str) -> str:
-    """Ensure a profile always uses the same User-Agent to avoid detection."""
     ua_file = os.path.join(profile_path, 'user_agent.txt')
-    if not os.path.exists(profile_path):
-        os.makedirs(profile_path, exist_ok=True)
-        
+    os.makedirs(profile_path, exist_ok=True)
+
     if os.path.exists(ua_file):
         try:
-            with open(ua_file, 'r') as f:
-                ua = f.read().strip()
-                if ua: return ua
-        except:
+            with open(ua_file, 'r', encoding='utf-8') as file:
+                ua = file.read().strip()
+                if ua:
+                    return ua
+        except Exception:
             pass
-    
-    # Default realistic UA if not found
-    new_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    try:
-        with open(ua_file, 'w') as f:
-            f.write(new_ua)
-    except:
-        pass
-    return new_ua
 
-def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False) -> List[Dict]:
+    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    try:
+        with open(ua_file, 'w', encoding='utf-8') as file:
+            file.write(ua)
+    except Exception:
+        pass
+    return ua
+
+
+def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False) -> Dict:
     profile_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shopee_user_profile')
     ua = get_consistent_ua(profile_path)
 
     co = ChromiumOptions()
-    
-    # Kết nối tới Chrome đang chạy sẵn (Docker mode)
     browser_host = os.environ.get('SCRAPER_BROWSER_HOST', '127.0.0.1')
     browser_port = int(os.environ.get('SCRAPER_BROWSER_PORT', '9222'))
-    co.set_address(f"{browser_host}:{browser_port}")
-    
-    # BẮT BUỘC: Giả lập User-Agent Windows để Shopee không nhận ra Bot
+    co.set_address(f'{browser_host}:{browser_port}')
     co.set_user_agent(ua)
 
+    browser = None
     try:
         browser = ChromiumPage(co)
-        
-        # We need exactly 2 tabs (0 for User, 1 for Maintenance)
-        while len(browser.tab_ids) < 2:
-            browser.new_tab()
-            
-        tab_ids = browser.tab_ids
-        # Close any additional tabs that might have accidentally accumulated
-        while len(tab_ids) > 2:
-            try:
-                browser.get_tab(tab_ids[-1]).close()
-            except:
-                pass
-            tab_ids = browser.tab_ids
-            
-        target_tab_id = tab_ids[1] if is_maintenance else tab_ids[0]
-        page = browser.get_tab(target_tab_id)
-        
-        try:
-            browser.set.tab_to_front(target_tab_id)
-        except:
-            pass
-        
-        # --- MODE SWITCH: DIRECT URL VS SEARCH ---
-        is_url = query.startswith('http')
-        
-        if is_url:
-            print(f"[Scraper] Direct Mode: Navigating to Product Page...", file=sys.stderr)
-            page.get(query)
-            time.sleep(random.uniform(2.0, 4.0))
-        else:
-            # === BYPASS HOÀN TOÀN TÌM KIẾM BẰNG UI (Tránh lỗi React State trên VPS chậm) ===
-            # Nhược điểm của việc gõ phím: Trên VPS chậm, code Python gõ phím 
-            # TRƯỚC VÀ TRONG LÚC React chưa kịp load sự kiện onChange.
-            # Dẫn tới việc text hiện trên ô input (DOM) nhưng React State không nhận!
-            # -> Giải pháp dứt điểm: Truy cập thẳng URL tìm kiếm chứa keyword.
-            import urllib.parse
-            encoded_query = urllib.parse.quote(query)
-            search_url = f"https://shopee.vn/search?keyword={encoded_query}"
-            
-            # Chỉ reload nếu đang ở một từ khóa khác để tiết kiệm tài nguyên
-            if encoded_query not in page.url:
-                print(f"[Scraper] Navigating directly to search URL for query: {query}", file=sys.stderr)
-                page.get(search_url)
-                time.sleep(random.uniform(2.0, 4.0))
-            else:
-                print(f"[Scraper] Already on search page for query: {query}", file=sys.stderr)
-                # Kéo lên đầu trang để search mới nếu cần
-                page.scroll.to_top()
-            
-            # Đóng popups rác nếu có
-            try:
-                for selector in ['css:.shopee-popup__close-btn', 'css:.shopee-modal__close']:
-                    close_btn = page.ele(selector, timeout=0.5)
-                    if close_btn: close_btn.click()
-            except: pass
+        page = _ensure_worker_tab(browser, is_maintenance)
 
-        # --- CAPTCHA CHECK ---
-        def handle_captcha(p):
-            if any(k in p.title.lower() for k in ['captcha', 'verify', 'robot']):
-                print(f"\n[Scraper] !!! CAPTCHA DETECTED !!!", file=sys.stderr)
-                for _ in range(120):
-                    time.sleep(1)
-                    if not any(k in p.title.lower() for k in ['captcha', 'verify', 'robot']):
-                        return True
-                return False
-            return True
+        if query.startswith('http'):
+            if not _handle_captcha(page):
+                return _build_runtime_result(blocked=True, error='CAPTCHA detected on product page')
+            listings = _extract_product_page(page, query)
+            return _build_runtime_result(listings=listings, channel='dom')
 
-        if not handle_captcha(page):
-            sys.exit(1)
+        _ensure_search_page(page, query)
 
-        if is_url:
-            # --- PRODUCT PAGE EXTRACTION ---
-            # Shopee product page selectors are different from search
-            # We look for price in the main detail section
-            time.sleep(2)
-            price_ele = page.ele('css:.pqTW9c, .G27LRz, ._2nzS9m', timeout=5) # Common Shopee price classes
-            title_ele = page.ele('css:.V_Y_S_, ._29_p48', timeout=5)
-            
-            price_text = price_ele.text if price_ele else "0"
-            # Clean price (e.g. "₫1.200.000" -> 1200000)
-            price = _parse_number_fragment(price_text)
-            
-            return [{
-                'title': title_ele.text if title_ele else "Unknown Product",
-                'price': price,
-                'url': query,
-                'image': '', # Optional for updates
-                'rating': 5.0,
-                'sold': 0,
-                'shop': 'Shopee'
-            }]
+        if not _handle_captcha(page):
+            return _build_runtime_result(blocked=True, error='CAPTCHA detected before API attempt')
 
-        # --- SEARCH RESULTS EXTRACTION ---
-        results: List[Dict] = []
-        seen_keys = set()
-        max_pages = (max_items // 60) + 1 if max_items > 60 else 1
-        
-        for page_idx in range(max_pages):
-            if not handle_captcha(page): break
-            if not _wait_for_items(page): break
+        api_result = _search_via_api(page, query, max_items)
+        if not api_result.get('error'):
+            return api_result
 
-            _human_scroll(page, steps=random.randint(4, 6))
-            time.sleep(1)
-            
-            items = page.eles(ITEM_LOCATOR)
-            for item in items:
-                if len(results) >= max_items: break
-                listing = _extract_listing(item)
-                if not listing: continue
-                key = f"{listing.get('url', '')}|{listing.get('price', 0)}"
-                if key in seen_keys: continue
-                seen_keys.add(key)
-                results.append(listing)
-            
-            if len(results) >= max_items: break
-            time.sleep(1)
+        print(
+            f"[Scraper][API] Falling back to DOM for '{query}': {api_result.get('apiFailureReason') or api_result.get('error')}",
+            file=sys.stderr,
+        )
 
-        return results[:max_items]
+        if not _handle_captcha(page):
+            return _build_runtime_result(
+                blocked=True,
+                api_attempted=True,
+                api_failure_reason=api_result.get('apiFailureReason') or api_result.get('error'),
+                error='CAPTCHA detected before DOM fallback',
+            )
+
+        listings = _collect_dom_search_results(page, max_items)
+        return _build_runtime_result(
+            listings=listings,
+            channel='dom',
+            api_attempted=True,
+            api_failure_reason=api_result.get('apiFailureReason') or api_result.get('error'),
+        )
     except Exception as err:
-        print(f"General Scraper Error: {err}", file=sys.stderr)
-        return []
+        print(f'General Scraper Error: {err}', file=sys.stderr)
+        return _build_runtime_result(error=str(err))
     finally:
-        # DO NOT CLOSE: We keep the tab open for the next search to look human.
         try:
-            # Tối ưu RAM cho VPS 2GB: Dọn cache và ép nhả RAM cho HĐH mà không làm mất trạng thái login
-            browser.clear_cache(cookies=False, storage=False)
-            import gc
-            gc.collect()
-        except:
+            if browser is not None:
+                browser.clear_cache(cookies=False, storage=False)
+        except Exception:
             pass
-        print(f"[Scraper] Task finished. Tab preserved. Cache cleared for memory constraints.", file=sys.stderr)
-    return []
+        print('[Scraper] Task finished. Tab preserved. Cache cleared.', file=sys.stderr)
 
 
 def _parse_cli_max_items(argv: List[str]) -> int:
     if len(argv) < 3:
         return 100
-
     try:
         return int(argv[2])
     except ValueError:
@@ -426,10 +706,9 @@ def _parse_cli_is_maintenance(argv: List[str]) -> bool:
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(json.dumps([]))
+        print(json.dumps(_build_runtime_result(error='Missing query argument')))
         sys.exit(1)
 
-    # Force UTF-8 for Windows output pipes
     if sys.platform == 'win32':
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -439,3 +718,5 @@ if __name__ == '__main__':
     is_maintenance_arg = _parse_cli_is_maintenance(sys.argv)
     output = search_shopee(query_arg, max_items=max_items_arg, is_maintenance=is_maintenance_arg)
     print(json.dumps(output, ensure_ascii=False))
+    if output.get('error'):
+        sys.exit(1)

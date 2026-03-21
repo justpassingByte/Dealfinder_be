@@ -14,6 +14,7 @@ import { scraperQueue } from '../config/queue';
 import { QueueEvents } from 'bullmq';
 import { Product, ProductVariant, PersistedListing } from '../types/product';
 import { compareListings } from './compareService';
+import { ScraperExecutionChannel } from './scraperService';
 
 // ── Constants ──────────────────────────────────────────
 const CACHE_TTL_SECONDS = 600;       // 10 minutes
@@ -44,16 +45,31 @@ const catalogQueueEvents = !require('../config/env').config.redis.useMock
  * Dispatch a scrape job to the BullMQ worker pool and wait for the result.
  * This replaces the old direct `scrapeListings()` call + global browser lock.
  */
+interface DispatchScrapeJobResult {
+    listings: Listing[];
+    channel: ScraperExecutionChannel | null;
+    validEmptyResult: boolean;
+    apiAttempted: boolean;
+    apiFailureReason: string | null;
+}
+
 async function dispatchScrapeJob(
     query: string,
     marketplace: string,
     maxItems: number,
     isMaintenance: boolean
-): Promise<Listing[]> {
+): Promise<DispatchScrapeJobResult> {
     if (!scraperQueue || !catalogQueueEvents) {
         // Fallback for mock/dev mode: import and call scrapeListings directly
-        const { scrapeListings } = require('./scraperService');
-        return scrapeListings(query, marketplace, maxItems, isMaintenance);
+        const { scrapeListingsWithTelemetry } = require('./scraperService');
+        const telemetry = await scrapeListingsWithTelemetry(query, marketplace, maxItems, isMaintenance);
+        return {
+            listings: telemetry.listings,
+            channel: telemetry.channel,
+            validEmptyResult: telemetry.validEmptyResult,
+            apiAttempted: telemetry.apiAttempted,
+            apiFailureReason: telemetry.apiFailureReason,
+        };
     }
 
     const job = await scraperQueue.add('catalog-search', {
@@ -64,19 +80,44 @@ async function dispatchScrapeJob(
 
     // Wait up to 3 minutes for the worker to finish.
     const result = await job.waitUntilFinished(catalogQueueEvents, 180_000);
-    const payload = result as { listings?: Listing[] } | undefined;
-    return payload?.listings ?? [];
+    const payload = result as {
+        listings?: Listing[];
+        channel?: ScraperExecutionChannel;
+        validEmptyResult?: boolean;
+        apiAttempted?: boolean;
+        apiFailureReason?: string | null;
+    } | undefined;
+
+    return {
+        listings: payload?.listings ?? [],
+        channel: payload?.channel ?? null,
+        validEmptyResult: Boolean(payload?.validEmptyResult),
+        apiAttempted: Boolean(payload?.apiAttempted),
+        apiFailureReason: typeof payload?.apiFailureReason === 'string' ? payload.apiFailureReason : null,
+    };
 }
 
 // ── Response Types ─────────────────────────────────────
 export interface CatalogSearchResult {
-    source: 'cache' | 'db' | 'scraper' | 'stale-fallback';
+    source: 'cache' | 'db' | 'api' | 'scraper' | 'stale-fallback';
     product: Product | null;
     variants: {
         variant: ProductVariant;
         listings: PersistedListing[];
     }[];
     rawListings?: Listing[];  // Only set when serving from scraper directly
+}
+
+function sourceFromWorkerChannel(channel: ScraperExecutionChannel | null): 'api' | 'scraper' {
+    return channel === 'api' ? 'api' : 'scraper';
+}
+
+function buildEmptyCatalogResult(source: CatalogSearchResult['source']): CatalogSearchResult {
+    return {
+        source,
+        product: null,
+        variants: [],
+    };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -180,10 +221,16 @@ export async function catalogSearch(
     // Route scraping through the BullMQ worker pool (no global browser lock needed)
     try {
         console.log(`[Catalog] Dispatching scrape job for "${normalizedQuery}" to worker pool...`);
-        let rawListings: Listing[] = [];
+        let workerResult: DispatchScrapeJobResult = {
+            listings: [],
+            channel: null,
+            validEmptyResult: false,
+            apiAttempted: false,
+            apiFailureReason: null,
+        };
 
         try {
-            rawListings = await dispatchScrapeJob(normalizedQuery, 'shopee', maxItems, isMaintenance);
+            workerResult = await dispatchScrapeJob(normalizedQuery, 'shopee', maxItems, isMaintenance);
         } catch (err) {
             console.error(`[Catalog] Scraper EXCEPTION for "${normalizedQuery}":`, err);
             if (product) {
@@ -193,23 +240,32 @@ export async function catalogSearch(
             throw err;
         }
 
+        const rawListings = workerResult.listings;
+        const liveSource = sourceFromWorkerChannel(workerResult.channel);
+
         if (rawListings.length === 0) {
+            if (workerResult.validEmptyResult) {
+                const emptyResult = buildEmptyCatalogResult(liveSource);
+                await redis.set(
+                    cacheKey.search(normalizedQuery),
+                    JSON.stringify(emptyResult),
+                    'EX', CACHE_TTL_SECONDS
+                );
+                return emptyResult;
+            }
+
             if (product) {
                 console.warn(`[Catalog] Scraper returned 0 items; marking refresh-pending for "${normalizedQuery}"`);
                 await catalog.markProductRefreshPending(product.id);
                 return buildProductResponse(product, 'stale-fallback');
             }
             console.warn(`[Catalog] Scraper returned 0 items for new product "${normalizedQuery}". Not persisting.`);
-            return {
-                source: 'scraper',
-                product: null,
-                variants: [],
-            };
+            return buildEmptyCatalogResult(liveSource);
         }
 
         // Persist scraped data into catalog
         const persistedProduct = await persistScrapedData(signatures, rawListings, product);
-        const result = await buildProductResponse(persistedProduct, 'scraper');
+        const result = await buildProductResponse(persistedProduct, liveSource);
 
         // Buffer popularity
         if (!isMaintenance) {

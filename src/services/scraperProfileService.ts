@@ -684,6 +684,10 @@ export class ScraperProfileService {
             eventType = 'scrape_blocked';
         } else if (telemetry.failureReason) {
             riskDelta += 10;
+        } else if (telemetry.processedListingCount === 0 && telemetry.validEmptyResult) {
+            riskDelta -= 4;
+            eventType = 'scrape_success';
+            success = true;
         } else if (telemetry.processedListingCount === 0 && !query.toLowerCase().startsWith('http')) {
             riskDelta += 15;
         } else if (telemetry.processedListingCount > 0) {
@@ -753,6 +757,11 @@ export class ScraperProfileService {
                     failureReason: telemetry.failureReason,
                     rawListingCount: telemetry.rawListingCount,
                     processedListingCount: telemetry.processedListingCount,
+                    channel: telemetry.channel,
+                    apiAttempted: telemetry.apiAttempted,
+                    apiFailureReason: telemetry.apiFailureReason,
+                    validEmptyResult: telemetry.validEmptyResult,
+                    usedDomFallback: telemetry.apiAttempted && telemetry.channel === 'dom',
                 },
             }, client);
 
@@ -837,6 +846,11 @@ export class ScraperProfileService {
                     failureReason: telemetry.failureReason,
                     processedListingCount: telemetry.processedListingCount,
                     warmupSuccessStreak: nextWarmupStreak,
+                    channel: telemetry.channel,
+                    apiAttempted: telemetry.apiAttempted,
+                    apiFailureReason: telemetry.apiFailureReason,
+                    validEmptyResult: telemetry.validEmptyResult,
+                    usedDomFallback: telemetry.apiAttempted && telemetry.channel === 'dom',
                 },
             }, client);
 

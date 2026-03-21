@@ -17,6 +17,10 @@ export interface ScraperJobData {
 
 export interface ScraperJobResult {
     listings: Listing[];
+    channel?: 'api' | 'dom';
+    validEmptyResult?: boolean;
+    apiAttempted?: boolean;
+    apiFailureReason?: string | null;
 }
 
 let scraperWorker: Worker<ScraperJobData, ScraperJobResult> | null = null;
@@ -180,7 +184,13 @@ if (!config.redis.useMock) {
                     await setCachedListings(query, telemetry.listings);
                 }
 
-                return { listings: telemetry.listings };
+                return {
+                    listings: telemetry.listings,
+                    channel: telemetry.channel ?? undefined,
+                    validEmptyResult: telemetry.validEmptyResult,
+                    apiAttempted: telemetry.apiAttempted,
+                    apiFailureReason: telemetry.apiFailureReason,
+                };
             } finally {
                 await clearJobInFlight(query);
             }
@@ -195,7 +205,9 @@ if (!config.redis.useMock) {
     );
 
     scraperWorker.on('completed', (job: Job<ScraperJobData> | undefined, result: ScraperJobResult) => {
-        console.log(`[ScraperWorker][${WORKER_ID}] Job ${job?.id} completed with ${result.listings.length} listings`);
+        console.log(
+            `[ScraperWorker][${WORKER_ID}] Job ${job?.id} completed with ${result.listings.length} listings via ${result.channel ?? 'unknown'}`
+        );
     });
 
     scraperWorker.on('failed', (job: Job<ScraperJobData> | undefined, err: Error) => {

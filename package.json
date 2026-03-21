@@ -12,9 +12,10 @@
     "migrate": "node dist/src/migrate.js",
     "migrate:catalog": "node dist/src/migrateCatalog.js",
     "migrate:catalog:down": "node dist/src/migrateCatalog.js --down",
-    "test": "npm run test:signature && npm run test:search-pipeline",
+    "test": "npm run test:signature && npm run test:search-pipeline && npm run test:scraper-service",
     "test:signature": "node --test -r ts-node/register src/services/signatureService.test.ts",
-    "test:search-pipeline": "node --test -r ts-node/register src/services/searchPipeline.test.ts"
+    "test:search-pipeline": "node --test -r ts-node/register src/services/searchPipeline.test.ts",
+    "test:scraper-service": "node --test -r ts-node/register src/services/scraperService.test.ts"
   },
   "keywords": [],
   "author": "",

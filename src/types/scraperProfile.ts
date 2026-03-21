@@ -131,4 +131,8 @@ export interface ScrapeTelemetry {
     failureReason: string | null;
     rawListingCount: number;
     processedListingCount: number;
+    channel: 'api' | 'dom' | null;
+    apiAttempted: boolean;
+    apiFailureReason: string | null;
+    validEmptyResult: boolean;
 }

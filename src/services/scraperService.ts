@@ -1,6 +1,7 @@
 /**
  * Scraper service (Node.js + Python).
- * Python handles scraping; Node.js applies post-scrape filtering/scoring.
+ * Python owns the browser session and now attempts Shopee API first,
+ * then falls back to DOM extraction in the same runtime when needed.
  */
 
 import { spawn } from 'child_process';
@@ -12,6 +13,18 @@ import { searchPipelineService } from './searchPipeline';
 const DEFAULT_MAX_ITEMS = 80;
 const MAX_ALLOWED_ITEMS = 120;
 
+export type ScraperExecutionChannel = 'api' | 'dom';
+
+export interface ScraperRuntimeResult {
+    listings: Listing[];
+    channel: ScraperExecutionChannel | null;
+    blocked: boolean;
+    apiAttempted: boolean;
+    apiFailureReason: string | null;
+    validEmptyResult: boolean;
+    error: string | null;
+}
+
 function clampMaxItems(value?: number): number {
     if (!value || Number.isNaN(value)) {
         return DEFAULT_MAX_ITEMS;
@@ -19,18 +32,75 @@ function clampMaxItems(value?: number): number {
     return Math.max(1, Math.min(value, MAX_ALLOWED_ITEMS));
 }
 
-async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS, isMaintenance = false): Promise<Listing[]> {
+function normalizeListings(rawListings: any[]): Listing[] {
+    return rawListings.map((item) => ({
+        title: typeof item?.title === 'string' ? item.title : 'Unknown Product',
+        price: typeof item?.price === 'number' ? item.price : Number(item?.price || 0),
+        rating: typeof item?.rating === 'number' ? item.rating : Number(item?.rating || 0),
+        sold: typeof item?.sold === 'number' ? item.sold : Number(item?.sold || 0),
+        shop: typeof item?.shop === 'string' ? item.shop : 'Shopee',
+        url: typeof item?.url === 'string' ? item.url : '',
+        image: typeof item?.image === 'string' ? item.image : '',
+        marketplace: typeof item?.marketplace === 'string' ? item.marketplace : 'shopee',
+    }));
+}
+
+export function parseScraperRuntimeOutput(dataString: string): ScraperRuntimeResult {
+    const parsed = JSON.parse(dataString);
+
+    if (Array.isArray(parsed)) {
+        return {
+            listings: normalizeListings(parsed),
+            channel: 'dom',
+            blocked: false,
+            apiAttempted: false,
+            apiFailureReason: null,
+            validEmptyResult: false,
+            error: null,
+        };
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('Python scraper returned an unsupported payload shape.');
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    const rawListings = Array.isArray(payload.listings) ? payload.listings : [];
+    const channelValue = payload.channel;
+    const channel: ScraperExecutionChannel | null = channelValue === 'api' || channelValue === 'dom'
+        ? channelValue
+        : null;
+
+    return {
+        listings: normalizeListings(rawListings),
+        channel,
+        blocked: Boolean(payload.blocked),
+        apiAttempted: Boolean(payload.apiAttempted ?? payload.api_attempted),
+        apiFailureReason: typeof payload.apiFailureReason === 'string'
+            ? payload.apiFailureReason
+            : typeof payload.api_failure_reason === 'string'
+                ? payload.api_failure_reason
+                : null,
+        validEmptyResult: Boolean(payload.validEmptyResult ?? payload.valid_empty_result),
+        error: typeof payload.error === 'string' ? payload.error : null,
+    };
+}
+
+async function runPythonScraper(
+    query: string,
+    maxItems = DEFAULT_MAX_ITEMS,
+    isMaintenance = false,
+): Promise<ScraperRuntimeResult> {
     const safeMaxItems = clampMaxItems(maxItems);
 
     return new Promise((resolve, reject) => {
         const pythonScript = path.join(process.cwd(), 'scripts', 'shopee_scraper.py');
-        const pythonProcess = spawn('python', [pythonScript, query, String(safeMaxItems), isMaintenance ? "maintenance" : "user"]);
+        const pythonProcess = spawn('python', [pythonScript, query, String(safeMaxItems), isMaintenance ? 'maintenance' : 'user']);
 
-        // Tối ưu: Đặt timeout bảo vệ chống treo (Zombie process ngốn RAM VPS)
         const timeoutId = setTimeout(() => {
             pythonProcess.kill('SIGTERM');
             reject(new Error(`Scraper process timed out for query: "${query}"`));
-        }, 180000); // 3 phút
+        }, 180000);
 
         pythonProcess.on('error', (err) => {
             clearTimeout(timeoutId);
@@ -55,36 +125,52 @@ async function runPythonScraper(query: string, maxItems = DEFAULT_MAX_ITEMS, isM
         pythonProcess.on('close', (code) => {
             clearTimeout(timeoutId);
 
-            if (isBlocked) {
-                console.error(`[Scraper] CRITICAL: Scraper was blocked by Shopee security.`);
-                reject(new Error('Scraper blocked by Shopee security (CAPTCHA).'));
-                return;
-            }
- 
-            if (code !== 0) {
-                console.warn(`[Scraper] Python worker failed (code ${code}).`);
-                // Check if we have some data anyway, but usually code != 0 means bad
-                if (!dataString) {
+            if (!dataString.trim()) {
+                if (isBlocked) {
+                    reject(new Error('Scraper blocked by Shopee security (CAPTCHA).'));
+                    return;
+                }
+
+                if (code !== 0) {
                     reject(new Error(`Scraper failed with exit code ${code}`));
                     return;
                 }
+
+                resolve({
+                    listings: [],
+                    channel: null,
+                    blocked: false,
+                    apiAttempted: false,
+                    apiFailureReason: null,
+                    validEmptyResult: false,
+                    error: null,
+                });
+                return;
             }
- 
+
             try {
-                if (!dataString.trim()) {
-                    console.warn(`[Scraper] Python worker returned empty output (query: "${query}").`);
-                    resolve([]);
+                const runtime = parseScraperRuntimeOutput(dataString);
+                const blocked = isBlocked || runtime.blocked;
+
+                if (blocked) {
+                    reject(new Error('Scraper blocked by Shopee security (CAPTCHA).'));
                     return;
                 }
-                const results = JSON.parse(dataString);
-                const listings: Listing[] = Array.isArray(results)
-                    ? results.map((item: any) => ({
-                        ...item,
-                        marketplace: 'shopee',
-                    }))
-                    : [];
-                console.log(`[Scraper] Successfully parsed ${listings.length} listings for "${query}"`);
-                resolve(listings);
+
+                if (runtime.error && runtime.listings.length === 0 && !runtime.validEmptyResult) {
+                    reject(new Error(runtime.error));
+                    return;
+                }
+
+                if (code !== 0 && runtime.listings.length === 0 && !runtime.validEmptyResult) {
+                    reject(new Error(runtime.error || runtime.apiFailureReason || `Scraper failed with exit code ${code}`));
+                    return;
+                }
+
+                console.log(
+                    `[Scraper] Parsed ${runtime.listings.length} listings for "${query}" via ${runtime.channel ?? 'unknown'} channel`
+                );
+                resolve(runtime);
             } catch (err) {
                 console.error('[Scraper] JSON parse error from Python output. First 200 chars:', dataString.substring(0, 200));
                 reject(err);
@@ -129,20 +215,28 @@ export async function scrapeListingsWithTelemetry(
             failureReason: null,
             rawListingCount: 0,
             processedListingCount: 0,
+            channel: null,
+            apiAttempted: false,
+            apiFailureReason: null,
+            validEmptyResult: false,
         };
     }
 
     try {
-        const rawListings = await runPythonScraper(query, maxItems, isMaintenance);
-        const listings = postProcessListings(query, rawListings);
+        const runtime = await runPythonScraper(query, maxItems, isMaintenance);
+        const listings = postProcessListings(query, runtime.listings);
 
         return {
             listings,
             latencyMs: Date.now() - startedAt,
             blocked: false,
             failureReason: null,
-            rawListingCount: rawListings.length,
+            rawListingCount: runtime.listings.length,
             processedListingCount: listings.length,
+            channel: runtime.channel,
+            apiAttempted: runtime.apiAttempted,
+            apiFailureReason: runtime.apiFailureReason,
+            validEmptyResult: runtime.validEmptyResult && listings.length === 0,
         };
     } catch (error: any) {
         const message = error instanceof Error ? error.message : String(error);
@@ -155,11 +249,20 @@ export async function scrapeListingsWithTelemetry(
             failureReason: message,
             rawListingCount: 0,
             processedListingCount: 0,
+            channel: null,
+            apiAttempted: false,
+            apiFailureReason: null,
+            validEmptyResult: false,
         };
     }
 }
 
-export async function scrapeListings(query: string, marketplace?: string, maxItems = DEFAULT_MAX_ITEMS, isMaintenance = false): Promise<Listing[]> {
+export async function scrapeListings(
+    query: string,
+    marketplace?: string,
+    maxItems = DEFAULT_MAX_ITEMS,
+    isMaintenance = false,
+): Promise<Listing[]> {
     const telemetry = await scrapeListingsWithTelemetry(query, marketplace, maxItems, isMaintenance);
     if (telemetry.failureReason) {
         throw new Error(telemetry.failureReason);
