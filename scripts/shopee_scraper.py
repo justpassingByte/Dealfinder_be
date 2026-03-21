@@ -310,6 +310,23 @@ def _normalize_api_listing(item: Dict) -> Optional[Dict]:
     }
 
 
+def _extract_api_items(data: Dict) -> Optional[List[Dict]]:
+    if not isinstance(data, dict):
+        return None
+
+    direct_items = data.get('items')
+    if isinstance(direct_items, list):
+        return direct_items
+
+    nested_data = data.get('data')
+    if isinstance(nested_data, dict):
+        nested_items = nested_data.get('items')
+        if isinstance(nested_items, list):
+            return nested_items
+
+    return None
+
+
 def _search_url(query: str) -> str:
     return f'https://shopee.vn/search?keyword={quote(query)}'
 
@@ -370,25 +387,16 @@ def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
     script = """
         const [keyword, limit, newest] = arguments;
         const params = new URLSearchParams({
-            by: 'relevancy',
             keyword,
             limit: String(limit),
             newest: String(newest),
             order: 'desc',
             page_type: 'search',
-            scenario: 'PAGE_GLOBAL_SEARCH',
-            version: '2',
         });
 
-        return fetch(`/api/v4/search/search_items?${params.toString()}`, {
+        return fetch(`https://shopee.vn/api/v4/search/search_items?${params.toString()}`, {
             method: 'GET',
             credentials: 'include',
-            headers: {
-                'accept': 'application/json',
-                'x-api-source': 'pc',
-                'x-requested-with': 'XMLHttpRequest',
-                'x-shopee-language': 'vi',
-            },
         }).then(async (response) => {
             const text = await response.text();
             let data = null;
@@ -507,9 +515,10 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
                 )
             break
 
-        items = data.get('items')
+        items = _extract_api_items(data)
         if not isinstance(items, list):
-            api_failure_reason = 'Shopee API payload did not include an items array'
+            data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) or 'no keys'
+            api_failure_reason = f'Shopee API payload did not include an items array (keys: {data_keys})'
             if page_idx == 0:
                 return _build_runtime_result(
                     channel=None,
