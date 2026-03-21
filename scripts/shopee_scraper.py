@@ -293,10 +293,26 @@ def _normalize_api_sold(item_basic: Dict) -> int:
     for key in ('historical_sold', 'sold'):
         try:
             value = item_basic.get(key)
-            if value is not None:
+            if value:
                 return int(value)
         except Exception:
             continue
+            
+    try:
+        display_info = item_basic.get('item_card_display_sold_count') or {}
+        display = str(display_info.get('historical_sold_count_text') or display_info.get('display_sold_count_text') or '')
+        if display:
+            match = re.search(r'([\d\.,]+)', display)
+            if match:
+                val = float(match.group(1).replace(',', '.'))
+                if 'k' in display.lower():
+                    val *= 1000
+                elif 'tr' in display.lower() or 'm' in display.lower():
+                    val *= 1000000
+                return int(val)
+    except Exception:
+        pass
+        
     return 0
 
 
@@ -832,9 +848,9 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
 
             print(f'[Scraper][API] Gói tin hợp lệ! Dừng render DOM...', file=sys.stderr)
 
-            # SUCCESS: Stop rendering immediately to save VPS resources (as requested by user)
+            # SUCCESS: Stop rendering immediately and clear DOM to save VPS resources
             try:
-                page.run_js('window.stop();')
+                page.run_js('window.stop(); document.body.innerHTML = "";')
             except Exception:
                 pass
 
@@ -936,9 +952,9 @@ def _capture_product_page(page, query: str) -> Dict:
 
             print(f'[Scraper][API][PDP] Gói tin hợp lệ! Dừng render DOM...', file=sys.stderr)
 
-            # SUCCESS: Stop rendering immediately
+            # SUCCESS: Stop rendering immediately and clear DOM to save VPS resources
             try:
-                page.run_js('window.stop();')
+                page.run_js('window.stop(); document.body.innerHTML = "";')
             except Exception:
                 pass
 
@@ -1188,12 +1204,59 @@ def _extract_product_page(page, query: str) -> Dict:
     data = payload.get('data')
 
     if payload.get('ok') and isinstance(data, dict):
-        # Extract from API data if available
-        item_data = data.get('data') or data
-        if isinstance(item_data, dict):
-            listing = _normalize_api_listing({'item_basic': item_data})
-            if listing:
-                return _build_runtime_result(listings=[listing], channel='api')
+        root = data.get('data') or {}
+        item = root.get('item') or {}
+
+        if item:
+            title = str(item.get('name') or item.get('title') or 'Unknown Product')
+            
+            price_val = item.get('price_min') or item.get('price') or 0
+            price = int(price_val / 100000) if price_val else 0
+            
+            image_id = item.get('image')
+            image = _build_image_url(str(image_id)) if image_id else ''
+            
+            item_rating = item.get('item_rating') or {}
+            rating = float(item_rating.get('rating_star') or 5.0)
+            
+            product_review = root.get('product_review') or {}
+            raw_sold = item.get('historical_sold') or product_review.get('historical_sold')
+            sold_val = 0
+            if raw_sold:
+                sold_val = int(raw_sold)
+            else:
+                display = str(product_review.get('historical_sold_display') or item.get('historical_sold_display') or '')
+                if display:
+                    match = re.search(r'([\d\.,]+)', display)
+                    if match:
+                        try:
+                            val = float(match.group(1).replace(',', '.'))
+                            if 'k' in display.lower():
+                                val *= 1000
+                            elif 'tr' in display.lower() or 'm' in display.lower():
+                                val *= 1000000
+                            sold_val = int(val)
+                        except Exception:
+                            pass
+            sold = sold_val
+            
+            shop_detailed = root.get('shop_detailed') or {}
+            shop_id = item.get('shop_id')
+            shop = str(shop_detailed.get('name') or shop_id or 'Shopee')
+            
+            listing = {
+                'title': title,
+                'price': price,
+                'url': query,
+                'image': image,
+                'rating': rating,
+                'sold': sold,
+                'shop': shop,
+                'marketplace': 'shopee',
+            }
+            return _build_runtime_result(listings=[listing], channel='api')
+        else:
+            print(f'[Scraper][API][PDP] Parse failed for root keys: {list(root.keys())}', file=sys.stderr)
 
     # Fallback to DOM if capture failed or missing data
     print('[Scraper] Direct Mode: falling back to DOM extraction...', file=sys.stderr)
