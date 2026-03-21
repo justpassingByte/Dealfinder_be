@@ -1,8 +1,9 @@
 """
 Shopee worker runtime using DrissionPage.
 
-- Keyword searches: try Shopee search API first inside the live browser session
-  without forcing a navigation to the search results page.
+- Keyword searches: bootstrap a search-ready tab, then try Shopee search API
+  from that live browser session.
+- API attempts are preceded by light randomized warm actions inside the tab.
 - Fallback: navigate to the search results page only if DOM extraction is needed.
 - Direct URLs: keep using product-page extraction.
 - Output: structured JSON to stdout, diagnostics to stderr only.
@@ -26,6 +27,24 @@ LINK_LOCATOR = 'css:a[href*="-i."], a'
 API_PAGE_SIZE = 60
 MAX_API_PAGES = 3
 API_TIMEOUT_SECONDS = 15
+API_RETRYABLE_ERROR_CODES = {90309999}
+API_MIN_DELAY_SECONDS = 2.0
+API_MAX_DELAY_SECONDS = 2.8
+
+SEARCH_INPUT_SELECTORS = (
+    'input.shopee-searchbar-input__input',
+    'input[placeholder*="Tìm"]',
+    'input[placeholder*="tìm"]',
+    'input[placeholder*="Search"]',
+    'input[type="search"]',
+)
+
+SEARCH_BUTTON_SELECTORS = (
+    'button[type="submit"]',
+    '.shopee-searchbar button',
+    'button[aria-label*="Tìm"]',
+    'button[aria-label*="Search"]',
+)
 
 PRODUCT_PRICE_LOCATOR = 'css:.pqTW9c, .G27LRz, ._2nzS9m'
 PRODUCT_TITLE_LOCATOR = 'css:.V_Y_S_, ._29_p48'
@@ -374,6 +393,295 @@ def _dismiss_common_popups(page) -> None:
         pass
 
 
+def _wait_for_document_ready(page, timeout_seconds: int = 10) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            ready_state = page.run_js('return document.readyState', timeout=2)
+            if ready_state in ('interactive', 'complete'):
+                return
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+
+def _perform_random_warm_actions(page, query: str) -> None:
+    script = """
+        const [keyword, inputSelectors] = arguments;
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+        const choice = (items) => items[Math.floor(Math.random() * items.length)];
+        const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
+        const findInput = () => {
+            for (const selector of inputSelectors) {
+                const ele = document.querySelector(selector);
+                if (isVisible(ele)) {
+                    return ele;
+                }
+            }
+            return null;
+        };
+        const cardSelector = '.shopee-search-item-result__item, [data-sqe="item"], a[href*="-i."]';
+        const visibleCards = () => Array.from(document.querySelectorAll(cardSelector)).filter(isVisible);
+        const actions = [];
+        const actionCount = randInt(1, 3);
+
+        for (let i = 0; i < actionCount; i += 1) {
+            const input = findInput();
+            const cards = visibleCards();
+            const candidates = ['scroll_down', 'scroll_mix'];
+            if (input) {
+                candidates.push('focus_input');
+            }
+            if (cards.length > 0) {
+                candidates.push('peek_card');
+            }
+
+            const action = choice(candidates);
+
+            if (action === 'scroll_down') {
+                const delta = randInt(260, 620);
+                window.scrollBy({ top: delta, behavior: 'smooth' });
+                actions.push(`scroll_down:${delta}`);
+            } else if (action === 'scroll_mix') {
+                const down = randInt(220, 520);
+                const up = randInt(60, 180);
+                window.scrollBy({ top: down, behavior: 'smooth' });
+                await sleep(randInt(220, 520));
+                window.scrollBy({ top: -up, behavior: 'smooth' });
+                actions.push(`scroll_mix:${down}/${up}`);
+            } else if (action === 'focus_input' && input) {
+                input.focus();
+                if (typeof input.setSelectionRange === 'function') {
+                    const length = String(input.value || '').length;
+                    input.setSelectionRange(length, length);
+                }
+                actions.push('focus_input');
+            } else if (action === 'peek_card' && cards.length > 0) {
+                const card = choice(cards.slice(0, Math.min(cards.length, 12)));
+                card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                actions.push('peek_card');
+            }
+
+            await sleep(randInt(420, 1100));
+        }
+
+        return {
+            actions,
+            keywordLength: String(keyword || '').length,
+        };
+    """
+
+    try:
+        result = page.run_js(script, query, list(SEARCH_INPUT_SELECTORS), timeout=20)
+        actions = result.get('actions') if isinstance(result, dict) else None
+        if isinstance(actions, list) and actions:
+            print(f"[Scraper][Warm] {', '.join(str(action) for action in actions)}", file=sys.stderr)
+    except Exception as err:
+        print(f'[Scraper][Warm] Random warm fallback: {err}', file=sys.stderr)
+        _human_scroll(page, steps=random.randint(1, 3))
+        time.sleep(random.uniform(0.4, 1.1))
+
+
+def _wait_for_search_ready(page, query: str, timeout_seconds: int = 15) -> bool:
+    deadline = time.time() + timeout_seconds
+    encoded_query = quote(query)
+
+    while time.time() < deadline:
+        current_url = page.url or ''
+        if '/search' in current_url and encoded_query in current_url:
+            if _wait_for_items(page):
+                return True
+            return True
+        time.sleep(0.4)
+
+    return False
+
+
+def _trigger_real_search(page, query: str) -> Dict:
+    script = """
+        const [keyword, inputSelectors, buttonSelectors] = arguments;
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+        const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
+        const queryVisible = (selectors, root = document) => {
+            for (const selector of selectors) {
+                const ele = root.querySelector(selector);
+                if (isVisible(ele)) {
+                    return ele;
+                }
+            }
+            return null;
+        };
+        const dispatchInput = (input) => {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const enterEventInit = {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+        };
+
+        const input = queryVisible(inputSelectors);
+        if (!input) {
+            return { ok: false, reason: 'search_input_not_found' };
+        }
+
+        input.focus();
+        await sleep(randInt(120, 260));
+
+        if (typeof input.select === 'function') {
+            input.select();
+        }
+        input.value = '';
+        dispatchInput(input);
+        await sleep(randInt(100, 180));
+
+        for (const ch of String(keyword || '')) {
+            input.value += ch;
+            dispatchInput(input);
+            await sleep(randInt(80, 140));
+        }
+
+        await sleep(randInt(160, 320));
+
+        const form = input.closest('form');
+        const submitBtn = queryVisible(buttonSelectors, form || document);
+        if (submitBtn) {
+            submitBtn.click();
+            return { ok: true, method: 'button' };
+        }
+
+        input.dispatchEvent(new KeyboardEvent('keydown', enterEventInit));
+        input.dispatchEvent(new KeyboardEvent('keypress', enterEventInit));
+        input.dispatchEvent(new KeyboardEvent('keyup', enterEventInit));
+
+        if (form) {
+            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        }
+
+        return { ok: true, method: 'enter' };
+    """
+
+    try:
+        result = page.run_js(
+            script,
+            query,
+            list(SEARCH_INPUT_SELECTORS),
+            list(SEARCH_BUTTON_SELECTORS),
+            timeout=25,
+        )
+        if isinstance(result, dict):
+            return result
+    except Exception as err:
+        return {'ok': False, 'reason': str(err)}
+
+    return {'ok': False, 'reason': 'search_bootstrap_failed'}
+
+
+def _extract_search_context(page) -> Dict:
+    script = """
+        const keys = ['search_session_id', 'global_search_session_id', 'view_session_id'];
+        const context = {
+            state: 'search_ready',
+            searchUrl: location.href,
+        };
+
+        try {
+            const entries = performance.getEntriesByType('resource')
+                .map((entry) => entry.name)
+                .filter((name) => typeof name === 'string' && name.includes('/api/v4/search/search_items'))
+                .slice(-10)
+                .reverse();
+
+            for (const name of entries) {
+                try {
+                    const url = new URL(name);
+                    for (const key of keys) {
+                        const value = url.searchParams.get(key);
+                        if (value && !context[key]) {
+                            context[key] = value;
+                        }
+                    }
+                } catch (error) {
+                    // ignore malformed performance entry
+                }
+            }
+        } catch (error) {
+            // ignore performance API issues
+        }
+
+        return context;
+    """
+
+    try:
+        result = page.run_js(script, timeout=10)
+        if isinstance(result, dict):
+            return result
+    except Exception:
+        pass
+
+    return {
+        'state': 'search_ready',
+        'searchUrl': page.url or '',
+    }
+
+
+def _ensure_search_ready(page, query: str, force_rebuild: bool = False) -> Dict:
+    current_url = page.url or ''
+    encoded_query = quote(query)
+
+    if not force_rebuild and '/search' in current_url and encoded_query in current_url:
+        _dismiss_common_popups(page)
+        _wait_for_document_ready(page)
+        if _wait_for_search_ready(page, query, timeout_seconds=6):
+            context = _extract_search_context(page)
+            context['state'] = 'search_ready'
+            return context
+
+    _ensure_storefront_origin(page)
+
+    if not _handle_captcha(page):
+        return {
+            'state': 'blocked',
+            'error': 'CAPTCHA detected while preparing search-ready context',
+        }
+
+    _perform_random_warm_actions(page, query)
+
+    bootstrap_result = _trigger_real_search(page, query)
+    if not bootstrap_result.get('ok'):
+        print(
+            f"[Scraper][Warm] Real search bootstrap failed for '{query}': {bootstrap_result.get('reason')}",
+            file=sys.stderr,
+        )
+        page.get(_search_url(query))
+        _wait_for_document_ready(page)
+        time.sleep(random.uniform(1.2, 2.2))
+
+    if not _wait_for_search_ready(page, query):
+        return {
+            'state': 'failed',
+            'error': 'Search context did not become ready after bootstrap',
+        }
+
+    _dismiss_common_popups(page)
+
+    if not _handle_captcha(page):
+        return {
+            'state': 'blocked',
+            'error': 'CAPTCHA detected after search bootstrap',
+        }
+
+    context = _extract_search_context(page)
+    context['state'] = 'search_ready'
+    return context
+
+
 def _is_storefront_origin(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or '').lower()
@@ -388,6 +696,7 @@ def _ensure_storefront_origin(page) -> None:
     if not _is_storefront_origin(current_url):
         print('[Scraper] Navigating to Shopee storefront to establish same-origin session', file=sys.stderr)
         page.get('https://shopee.vn/')
+        _wait_for_document_ready(page)
         time.sleep(random.uniform(1.5, 3.0))
     else:
         try:
@@ -396,6 +705,7 @@ def _ensure_storefront_origin(page) -> None:
             pass
 
     _dismiss_common_popups(page)
+    _wait_for_document_ready(page)
 
 
 def _ensure_search_page(page, query: str) -> None:
@@ -406,6 +716,7 @@ def _ensure_search_page(page, query: str) -> None:
     if '/search' not in current_url or encoded_query not in current_url:
         print(f'[Scraper] Navigating to search URL for DOM fallback: "{query}"', file=sys.stderr)
         page.get(search_url)
+        _wait_for_document_ready(page)
         time.sleep(random.uniform(1.5, 3.0))
     else:
         try:
@@ -414,11 +725,12 @@ def _ensure_search_page(page, query: str) -> None:
             pass
 
     _dismiss_common_popups(page)
+    _wait_for_document_ready(page)
 
 
-def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
+def _fetch_api_page(page, query: str, limit: int, newest: int, search_context: Optional[Dict] = None) -> Dict:
     script = """
-        const [keyword, limit, newest] = arguments;
+        const [keyword, limit, newest, searchContext] = arguments;
         const params = new URLSearchParams({
             keyword,
             limit: String(limit),
@@ -426,6 +738,13 @@ def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
             order: 'desc',
             page_type: 'search',
         });
+
+        for (const key of ['search_session_id', 'global_search_session_id', 'view_session_id']) {
+            const value = searchContext && typeof searchContext[key] === 'string' ? searchContext[key] : '';
+            if (value) {
+                params.set(key, value);
+            }
+        }
 
         return fetch(`https://shopee.vn/api/v4/search/search_items?${params.toString()}`, {
             method: 'GET',
@@ -456,7 +775,7 @@ def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
     """
 
     try:
-        result = page.run_js(script, query, limit, newest, timeout=API_TIMEOUT_SECONDS)
+        result = page.run_js(script, query, limit, newest, search_context or {}, timeout=API_TIMEOUT_SECONDS)
     except Exception as err:
         return {
             'ok': False,
@@ -480,12 +799,36 @@ def _fetch_api_page(page, query: str, limit: int, newest: int) -> Dict:
     }
 
 
+def _extract_api_error_code(data) -> Optional[int]:
+    if not isinstance(data, dict):
+        return None
+
+    error_value = data.get('error')
+    try:
+        error_code = int(error_value)
+    except Exception:
+        return None
+
+    return error_code
+
+
 def _search_via_api(page, query: str, max_items: int) -> Dict:
     target_items = min(max_items, API_PAGE_SIZE * MAX_API_PAGES)
     page_count = max(1, min(MAX_API_PAGES, (target_items + API_PAGE_SIZE - 1) // API_PAGE_SIZE))
     listings: List[Dict] = []
     seen_keys = set()
     api_failure_reason: Optional[str] = None
+    search_context = _ensure_search_ready(page, query)
+    context_rebuilt = False
+
+    if search_context.get('error'):
+        return _build_runtime_result(
+            channel=None,
+            blocked=search_context.get('state') == 'blocked',
+            api_attempted=False,
+            api_failure_reason=str(search_context.get('error')),
+            error=str(search_context.get('error')),
+        )
 
     for page_idx in range(page_count):
         remaining = target_items - len(listings)
@@ -494,7 +837,12 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
 
         limit = min(API_PAGE_SIZE, remaining)
         newest = page_idx * API_PAGE_SIZE
-        payload = _fetch_api_page(page, query, limit, newest)
+
+        if page_idx > 0:
+            time.sleep(random.uniform(API_MIN_DELAY_SECONDS, API_MAX_DELAY_SECONDS))
+
+        _perform_random_warm_actions(page, query)
+        payload = _fetch_api_page(page, query, limit, newest, search_context)
 
         if payload.get('runtimeError'):
             api_failure_reason = str(payload.get('runtimeError'))
@@ -547,6 +895,42 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
                     error=api_failure_reason,
                 )
             break
+
+        error_code = _extract_api_error_code(data)
+        if error_code not in (None, 0):
+            if error_code in API_RETRYABLE_ERROR_CODES and not context_rebuilt:
+                print(f'[Scraper][API] Rebuilding search context after business error {error_code} for "{query}"', file=sys.stderr)
+                search_context = _ensure_search_ready(page, query, force_rebuild=True)
+                context_rebuilt = True
+
+                if search_context.get('error'):
+                    api_failure_reason = str(search_context.get('error'))
+                    return _build_runtime_result(
+                        channel=None,
+                        blocked=search_context.get('state') == 'blocked',
+                        api_attempted=True,
+                        api_failure_reason=api_failure_reason,
+                        error=api_failure_reason,
+                    )
+
+                _perform_random_warm_actions(page, query)
+                time.sleep(random.uniform(API_MIN_DELAY_SECONDS, API_MAX_DELAY_SECONDS))
+                payload = _fetch_api_page(page, query, limit, newest, search_context)
+                data = payload.get('data')
+                if isinstance(data, dict):
+                    error_code = _extract_api_error_code(data)
+
+            if error_code not in (None, 0):
+                data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) or 'no keys'
+                api_failure_reason = f'Shopee API returned error {error_code} (keys: {data_keys})'
+                if page_idx == 0:
+                    return _build_runtime_result(
+                        channel=None,
+                        api_attempted=True,
+                        api_failure_reason=api_failure_reason,
+                        error=api_failure_reason,
+                    )
+                break
 
         items = _extract_api_items(data)
         if not isinstance(items, list):
@@ -720,11 +1104,6 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
                 return _build_runtime_result(blocked=True, error='CAPTCHA detected on product page')
             listings = _extract_product_page(page, query)
             return _build_runtime_result(listings=listings, channel='dom')
-
-        _ensure_storefront_origin(page)
-
-        if not _handle_captcha(page):
-            return _build_runtime_result(blocked=True, error='CAPTCHA detected before API attempt')
 
         api_result = _search_via_api(page, query, max_items)
         if not api_result.get('error'):
