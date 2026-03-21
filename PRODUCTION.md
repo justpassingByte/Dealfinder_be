@@ -187,7 +187,12 @@ docker stats --no-stream
 
 1. Log in to [Vercel.com](https://vercel.com) with your GitHub account.
 2. Import the frontend repo.
-3. Set environment variable: `NEXT_PUBLIC_API_URL=https://api.your-domain.com`
-4. Deploy.
+3. Set backend target environment variable:
+   `DESTINATION_API_URL=https://api.your-domain.com`
+4. Optional compatibility fallback:
+   `NEXT_PUBLIC_API_URL=https://api.your-domain.com`
+5. Deploy.
 
-> Do **not** append `/api` — the frontend code already adds it.
+> Do **not** append `/api` - the frontend rewrite already adds it.
+>
+> In production, the browser calls the frontend at `/api/...` and Vercel rewrites that request to the backend target above. If `DESTINATION_API_URL` is missing or stale, frontend requests will never reach the backend worker.
