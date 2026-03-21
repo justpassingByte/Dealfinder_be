@@ -25,11 +25,11 @@ TITLE_LOCATOR = 'css:.line-clamp-2, [data-sqe="name"], div.truncate'
 LINK_LOCATOR = 'css:a[href*="-i."], a'
 
 API_PAGE_SIZE = 60
-MAX_API_PAGES = 3
 API_TIMEOUT_SECONDS = 15
 API_RETRYABLE_ERROR_CODES = {90309999}
-API_MIN_DELAY_SECONDS = 2.0
-API_MAX_DELAY_SECONDS = 2.8
+API_CAPTURE_TARGET = 'api/v4/search/search_items'
+API_CAPTURE_METHODS = ('GET',)
+API_CAPTURE_RESOURCE_TYPES = ('XHR', 'Fetch')
 
 SEARCH_INPUT_SELECTORS = (
     'input.shopee-searchbar-input__input',
@@ -697,73 +697,190 @@ def _ensure_search_page(page, query: str) -> None:
     _wait_for_document_ready(page)
 
 
-def _fetch_api_page(page, query: str, limit: int, newest: int, search_context: Optional[Dict] = None) -> Dict:
-    script = """
-        const [keyword, limit, newest, searchSessionId, globalSearchSessionId, viewSessionId] = arguments;
-        const params = new URLSearchParams({
-            keyword,
-            limit: String(limit),
-            newest: String(newest),
-            order: 'desc',
-            page_type: 'search',
-        });
+def _normalize_query_keyword(value: str) -> str:
+    return re.sub(r'\s+', ' ', str(value or '').strip()).lower()
 
-        const dynamicParams = {
-            search_session_id: searchSessionId,
-            global_search_session_id: globalSearchSessionId,
-            view_session_id: viewSessionId,
-        };
 
-        for (const [key, value] of Object.entries(dynamicParams)) {
-            if (typeof value === 'string' && value) {
-                params.set(key, value);
-            }
-        }
+def _response_text_snippet(body) -> str:
+    if body is None:
+        return ''
 
-        return fetch(`https://shopee.vn/api/v4/search/search_items?${params.toString()}`, {
-            method: 'GET',
-            credentials: 'include',
-        }).then(async (response) => {
-            const text = await response.text();
-            let data = null;
-            try {
-                data = JSON.parse(text);
-            } catch (error) {
-                data = null;
-            }
-            return {
-                ok: response.ok,
-                status: response.status,
-                contentType: response.headers.get('content-type') || '',
-                data,
-                textSnippet: text.slice(0, 600),
-            };
-        }).catch((error) => ({
-            ok: false,
-            status: 0,
-            contentType: '',
-            data: null,
-            textSnippet: String(error),
-            runtimeError: String(error),
-        }));
-    """
+    if isinstance(body, bytes):
+        try:
+            return body.decode('utf-8', errors='replace')[:600]
+        except Exception:
+            return repr(body[:120])
 
-    search_context = search_context or {}
-    search_session_id = str(search_context.get('search_session_id') or '')
-    global_search_session_id = str(search_context.get('global_search_session_id') or '')
-    view_session_id = str(search_context.get('view_session_id') or '')
+    if isinstance(body, str):
+        return body[:600]
 
     try:
-        result = page.run_js(
-            script,
-            query,
-            limit,
-            newest,
-            search_session_id,
-            global_search_session_id,
-            view_session_id,
-            timeout=API_TIMEOUT_SECONDS,
+        return json.dumps(body)[:600]
+    except Exception:
+        return str(body)[:600]
+
+
+def _parse_response_body_as_json(body):
+    if isinstance(body, (dict, list)):
+        return body
+
+    if isinstance(body, bytes):
+        try:
+            body = body.decode('utf-8', errors='replace')
+        except Exception:
+            return None
+
+    if isinstance(body, str):
+        try:
+            return json.loads(body)
+        except Exception:
+            return None
+
+    return None
+
+
+def _is_matching_search_capture(packet, query: str) -> bool:
+    try:
+        params = packet.request.params or {}
+    except Exception:
+        return False
+
+    if _normalize_query_keyword(params.get('keyword')) != _normalize_query_keyword(query):
+        return False
+
+    page_type = str(params.get('page_type') or '').strip().lower()
+    if page_type and page_type != 'search':
+        return False
+
+    newest = str(params.get('newest') or '').strip()
+    if newest and newest != '0':
+        return False
+
+    return True
+
+
+def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
+    listener = page.listen
+    attempted = False
+
+    try:
+        _ensure_storefront_origin(page, force_homepage=force_homepage)
+
+        if not _handle_captcha(page):
+            reason = 'CAPTCHA detected before API attempt'
+            return {
+                'ok': False,
+                'status': 0,
+                'contentType': '',
+                'data': None,
+                'textSnippet': reason,
+                'runtimeError': reason,
+                'blocked': True,
+                'attempted': attempted,
+            }
+
+        listener.start(
+            API_CAPTURE_TARGET,
+            method=API_CAPTURE_METHODS,
+            res_type=API_CAPTURE_RESOURCE_TYPES,
         )
+        attempted = True
+
+        trigger_result = _trigger_real_search(page, query)
+        if not trigger_result.get('ok') and trigger_result.get('reason') == 'search_input_not_found' and not force_homepage:
+            listener.stop()
+            _ensure_storefront_origin(page, force_homepage=True)
+
+            if not _handle_captcha(page):
+                reason = 'CAPTCHA detected before API retry'
+                return {
+                    'ok': False,
+                    'status': 0,
+                    'contentType': '',
+                    'data': None,
+                    'textSnippet': reason,
+                    'runtimeError': reason,
+                    'blocked': True,
+                    'attempted': attempted,
+                }
+
+            listener.start(
+                API_CAPTURE_TARGET,
+                method=API_CAPTURE_METHODS,
+                res_type=API_CAPTURE_RESOURCE_TYPES,
+            )
+            trigger_result = _trigger_real_search(page, query)
+
+        if not trigger_result.get('ok'):
+            reason = f"Real search trigger failed: {trigger_result.get('reason') or 'unknown_error'}"
+            return {
+                'ok': False,
+                'status': 0,
+                'contentType': '',
+                'data': None,
+                'textSnippet': reason,
+                'runtimeError': reason,
+                'attempted': attempted,
+            }
+
+        deadline = time.time() + API_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            packet = listener.wait(timeout=max(0.25, deadline - time.time()), fit_count=False)
+            if not packet:
+                break
+
+            if not _is_matching_search_capture(packet, query):
+                continue
+
+            if packet.is_failed:
+                fail_info = packet.fail_info
+                fail_reason = getattr(fail_info, 'errorText', None) or 'Captured request failed'
+                return {
+                    'ok': False,
+                    'status': 0,
+                    'contentType': '',
+                    'data': None,
+                    'textSnippet': fail_reason,
+                    'runtimeError': fail_reason,
+                    'attempted': attempted,
+                }
+
+            response = packet.response
+            body = response.body
+            content_type = str(response.headers.get('content-type') or response.mimeType or '')
+            status = int(response.status or 0)
+            return {
+                'ok': 200 <= status < 300,
+                'status': status,
+                'contentType': content_type,
+                'data': _parse_response_body_as_json(body),
+                'textSnippet': _response_text_snippet(body),
+                'attempted': attempted,
+            }
+
+        if not _handle_captcha(page):
+            reason = 'CAPTCHA detected while waiting for captured API response'
+            return {
+                'ok': False,
+                'status': 0,
+                'contentType': '',
+                'data': None,
+                'textSnippet': reason,
+                'runtimeError': reason,
+                'blocked': True,
+                'attempted': attempted,
+            }
+
+        reason = f'Network capture timed out after {API_TIMEOUT_SECONDS}s'
+        return {
+            'ok': False,
+            'status': 0,
+            'contentType': '',
+            'data': None,
+            'textSnippet': reason,
+            'runtimeError': reason,
+            'attempted': attempted,
+        }
     except Exception as err:
         return {
             'ok': False,
@@ -772,19 +889,13 @@ def _fetch_api_page(page, query: str, limit: int, newest: int, search_context: O
             'data': None,
             'textSnippet': str(err),
             'runtimeError': str(err),
+            'attempted': attempted,
         }
-
-    if isinstance(result, dict):
-        return result
-
-    return {
-        'ok': False,
-        'status': 0,
-        'contentType': '',
-        'data': None,
-        'textSnippet': 'Unexpected API result shape',
-        'runtimeError': 'Unexpected API result shape',
-    }
+    finally:
+        try:
+            listener.stop()
+        except Exception:
+            pass
 
 
 def _extract_api_error_code(data) -> Optional[int]:
@@ -801,13 +912,22 @@ def _extract_api_error_code(data) -> Optional[int]:
 
 
 def _search_via_api(page, query: str, max_items: int) -> Dict:
-    target_items = min(max_items, API_PAGE_SIZE * MAX_API_PAGES)
-    page_count = max(1, min(MAX_API_PAGES, (target_items + API_PAGE_SIZE - 1) // API_PAGE_SIZE))
-    listings: List[Dict] = []
-    seen_keys = set()
+    target_items = min(max_items, API_PAGE_SIZE)
     api_failure_reason: Optional[str] = None
-    search_context = _extract_search_context(page) if _is_storefront_origin(page.url or '') else {}
-    context_rebuilt = False
+    capture_retried = False
+
+    if max_items > API_PAGE_SIZE:
+        api_failure_reason = (
+            f'Network capture currently supports up to {API_PAGE_SIZE} items; '
+            f'requested {max_items}'
+        )
+        return _build_runtime_result(
+            channel=None,
+            blocked=False,
+            api_attempted=False,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
 
     if not _handle_captcha(page):
         return _build_runtime_result(
@@ -818,38 +938,73 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
             error='CAPTCHA detected before API attempt',
         )
 
-    if search_context.get('error'):
+    payload = _capture_api_page(page, query)
+    api_attempted = bool(payload.get('attempted'))
+
+    if payload.get('runtimeError'):
+        api_failure_reason = str(payload.get('runtimeError'))
         return _build_runtime_result(
             channel=None,
-            blocked=search_context.get('state') == 'blocked',
-            api_attempted=False,
-            api_failure_reason=str(search_context.get('error')),
-            error=str(search_context.get('error')),
+            blocked=bool(payload.get('blocked')),
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
         )
 
-    for page_idx in range(page_count):
-        remaining = target_items - len(listings)
-        if remaining <= 0:
-            break
+    status = int(payload.get('status') or 0)
+    content_type = str(payload.get('contentType') or '').lower()
+    text_snippet = str(payload.get('textSnippet') or '')
+    lower_snippet = text_snippet.lower()
 
-        limit = min(API_PAGE_SIZE, remaining)
-        newest = page_idx * API_PAGE_SIZE
+    if not payload.get('ok'):
+        api_failure_reason = f'API request failed with status {status}'
+        if 'captcha' in lower_snippet or 'robot' in lower_snippet:
+            api_failure_reason = f'{api_failure_reason} (captcha)'
+        return _build_runtime_result(
+            channel=None,
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
 
-        if page_idx > 0:
-            time.sleep(random.uniform(API_MIN_DELAY_SECONDS, API_MAX_DELAY_SECONDS))
+    data = payload.get('data')
+    if 'json' not in content_type and not isinstance(data, (dict, list)):
+        api_failure_reason = 'Shopee API returned non-JSON content'
+        return _build_runtime_result(
+            channel=None,
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
 
-        payload = _fetch_api_page(page, query, limit, newest, search_context)
+    if not isinstance(data, (dict, list)):
+        api_failure_reason = 'Shopee API returned an invalid JSON payload'
+        return _build_runtime_result(
+            channel=None,
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
+
+    error_code = _extract_api_error_code(data)
+    if error_code in API_RETRYABLE_ERROR_CODES and not capture_retried:
+        print(
+            f'[Scraper][API] Retrying network capture from homepage after business error {error_code} for "{query}"',
+            file=sys.stderr,
+        )
+        capture_retried = True
+        payload = _capture_api_page(page, query, force_homepage=True)
+        api_attempted = api_attempted or bool(payload.get('attempted'))
 
         if payload.get('runtimeError'):
             api_failure_reason = str(payload.get('runtimeError'))
-            if page_idx == 0:
-                return _build_runtime_result(
-                    channel=None,
-                    api_attempted=True,
-                    api_failure_reason=api_failure_reason,
-                    error=api_failure_reason,
-                )
-            break
+            return _build_runtime_result(
+                channel=None,
+                blocked=bool(payload.get('blocked')),
+                api_attempted=api_attempted,
+                api_failure_reason=api_failure_reason,
+                error=api_failure_reason,
+            )
 
         status = int(payload.get('status') or 0)
         content_type = str(payload.get('contentType') or '').lower()
@@ -860,127 +1015,90 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
             api_failure_reason = f'API request failed with status {status}'
             if 'captcha' in lower_snippet or 'robot' in lower_snippet:
                 api_failure_reason = f'{api_failure_reason} (captcha)'
-            if page_idx == 0:
-                return _build_runtime_result(
-                    channel=None,
-                    api_attempted=True,
-                    api_failure_reason=api_failure_reason,
-                    error=api_failure_reason,
-                )
-            break
-
-        if 'json' not in content_type and not isinstance(payload.get('data'), dict):
-            api_failure_reason = 'Shopee API returned non-JSON content'
-            if page_idx == 0:
-                return _build_runtime_result(
-                    channel=None,
-                    api_attempted=True,
-                    api_failure_reason=api_failure_reason,
-                    error=api_failure_reason,
-                )
-            break
-
-        data = payload.get('data')
-        if not isinstance(data, dict):
-            api_failure_reason = 'Shopee API returned an invalid JSON payload'
-            if page_idx == 0:
-                return _build_runtime_result(
-                    channel=None,
-                    api_attempted=True,
-                    api_failure_reason=api_failure_reason,
-                    error=api_failure_reason,
-                )
-            break
-
-        error_code = _extract_api_error_code(data)
-        if error_code not in (None, 0):
-            if error_code in API_RETRYABLE_ERROR_CODES and not context_rebuilt:
-                print(f'[Scraper][API] Rebuilding search context after business error {error_code} for "{query}"', file=sys.stderr)
-                search_context = _ensure_search_ready(page, query, force_rebuild=True)
-                context_rebuilt = True
-
-                if search_context.get('error'):
-                    api_failure_reason = str(search_context.get('error'))
-                    return _build_runtime_result(
-                        channel=None,
-                        blocked=search_context.get('state') == 'blocked',
-                        api_attempted=True,
-                        api_failure_reason=api_failure_reason,
-                        error=api_failure_reason,
-                    )
-
-                time.sleep(random.uniform(API_MIN_DELAY_SECONDS, API_MAX_DELAY_SECONDS))
-                payload = _fetch_api_page(page, query, limit, newest, search_context)
-                data = payload.get('data')
-                if isinstance(data, dict):
-                    error_code = _extract_api_error_code(data)
-
-            if error_code not in (None, 0):
-                data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) or 'no keys'
-                api_failure_reason = f'Shopee API returned error {error_code} (keys: {data_keys})'
-                if page_idx == 0:
-                    return _build_runtime_result(
-                        channel=None,
-                        api_attempted=True,
-                        api_failure_reason=api_failure_reason,
-                        error=api_failure_reason,
-                    )
-                break
-
-        items = _extract_api_items(data)
-        if not isinstance(items, list):
-            data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) or 'no keys'
-            error_value = data.get('error')
-            api_failure_reason = f'Shopee API payload did not include an items array (error: {error_value}; keys: {data_keys})'
-            if page_idx == 0:
-                return _build_runtime_result(
-                    channel=None,
-                    api_attempted=True,
-                    api_failure_reason=api_failure_reason,
-                    error=api_failure_reason,
-                )
-            break
-
-        if page_idx == 0 and len(items) == 0:
             return _build_runtime_result(
-                listings=[],
-                channel='api',
-                api_attempted=True,
-                api_failure_reason=None,
-                valid_empty_result=True,
+                channel=None,
+                api_attempted=api_attempted,
+                api_failure_reason=api_failure_reason,
+                error=api_failure_reason,
             )
 
-        page_listings = []
-        for item in items:
-            listing = _normalize_api_listing(item)
-            if listing:
-                page_listings.append(listing)
+        data = payload.get('data')
+        if 'json' not in content_type and not isinstance(data, (dict, list)):
+            api_failure_reason = 'Shopee API returned non-JSON content'
+            return _build_runtime_result(
+                channel=None,
+                api_attempted=api_attempted,
+                api_failure_reason=api_failure_reason,
+                error=api_failure_reason,
+            )
 
-        if len(items) > 0 and not page_listings:
-            api_failure_reason = 'Shopee API payload was missing required listing fields'
-            if page_idx == 0:
-                return _build_runtime_result(
-                    channel=None,
-                    api_attempted=True,
-                    api_failure_reason=api_failure_reason,
-                    error=api_failure_reason,
-                )
-            break
+        if not isinstance(data, (dict, list)):
+            api_failure_reason = 'Shopee API returned an invalid JSON payload'
+            return _build_runtime_result(
+                channel=None,
+                api_attempted=api_attempted,
+                api_failure_reason=api_failure_reason,
+                error=api_failure_reason,
+            )
 
-        for listing in page_listings:
-            key = f"{listing.get('url', '')}|{listing.get('price', 0)}"
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            listings.append(listing)
+        error_code = _extract_api_error_code(data)
 
-        if len(page_listings) < limit:
-            break
+    if error_code not in (None, 0):
+        data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) if isinstance(data, dict) else 'no keys'
+        api_failure_reason = f'Shopee API returned error {error_code} (keys: {data_keys})'
+        return _build_runtime_result(
+            channel=None,
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
+
+    items = _extract_api_items(data)
+    if not isinstance(items, list):
+        data_keys = ', '.join(sorted(str(key) for key in data.keys())[:8]) if isinstance(data, dict) else 'no keys'
+        error_value = data.get('error') if isinstance(data, dict) else None
+        api_failure_reason = f'Shopee API payload did not include an items array (error: {error_value}; keys: {data_keys})'
+        return _build_runtime_result(
+            channel=None,
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
+
+    if len(items) == 0:
+        return _build_runtime_result(
+            listings=[],
+            channel='api',
+            api_attempted=api_attempted,
+            api_failure_reason=None,
+            valid_empty_result=True,
+        )
+
+    listings: List[Dict] = []
+    seen_keys = set()
+    for item in items:
+        listing = _normalize_api_listing(item)
+        if not listing:
+            continue
+        key = f"{listing.get('url', '')}|{listing.get('price', 0)}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        listings.append(listing)
+
+    if len(items) > 0 and not listings:
+        api_failure_reason = 'Shopee API payload was missing required listing fields'
+        return _build_runtime_result(
+            channel=None,
+            api_attempted=api_attempted,
+            api_failure_reason=api_failure_reason,
+            error=api_failure_reason,
+        )
 
     return _build_runtime_result(
         listings=listings[:target_items],
         channel='api',
-        api_attempted=True,
+        api_attempted=api_attempted,
         api_failure_reason=api_failure_reason,
         valid_empty_result=False,
     )
