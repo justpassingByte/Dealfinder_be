@@ -1034,6 +1034,55 @@ def _collect_dom_search_results(page, max_items: int) -> List[Dict]:
     return results[:max_items]
 
 
+def _snapshot_tab(page) -> Dict:
+    try:
+        tab_id = str(page.tab_id or '')
+    except Exception:
+        tab_id = ''
+
+    try:
+        title = str(page.title or '')
+    except Exception:
+        title = ''
+
+    try:
+        url = str(page.url or '')
+    except Exception:
+        url = ''
+
+    return {
+        'tab_id': tab_id,
+        'title': title,
+        'url': url,
+    }
+
+
+def _is_shopee_tab_snapshot(snapshot: Dict) -> bool:
+    url = str(snapshot.get('url') or '')
+    title = str(snapshot.get('title') or '').lower()
+    return _is_storefront_origin(url) or 'shopee' in title
+
+
+def _choose_worker_tab(snapshots: List[Dict], is_maintenance: bool) -> Dict:
+    shopee_tabs = [snapshot for snapshot in snapshots if _is_shopee_tab_snapshot(snapshot)]
+    other_tabs = [snapshot for snapshot in snapshots if not _is_shopee_tab_snapshot(snapshot)]
+
+    if is_maintenance:
+        if other_tabs:
+            return other_tabs[0]
+        if len(shopee_tabs) > 1:
+            return shopee_tabs[1]
+        if shopee_tabs:
+            return shopee_tabs[0]
+    else:
+        if shopee_tabs:
+            return shopee_tabs[0]
+        if other_tabs:
+            return other_tabs[0]
+
+    return snapshots[0]
+
+
 def _ensure_worker_tab(browser, is_maintenance: bool):
     while len(browser.tab_ids) < 2:
         browser.new_tab()
@@ -1046,13 +1095,38 @@ def _ensure_worker_tab(browser, is_maintenance: bool):
             pass
         tab_ids = browser.tab_ids
 
-    target_tab_id = tab_ids[1] if is_maintenance else tab_ids[0]
+    snapshots = []
+    for tab_id in tab_ids:
+        try:
+            page = browser.get_tab(tab_id)
+            snapshots.append(_snapshot_tab(page))
+        except Exception:
+            continue
+
+    if not snapshots:
+        page = browser.get_tab(tab_ids[0])
+        snapshots = [_snapshot_tab(page)]
+
+    selected_snapshot = _choose_worker_tab(snapshots, is_maintenance)
+    target_tab_id = selected_snapshot.get('tab_id') or tab_ids[0]
     page = browser.get_tab(target_tab_id)
+
+    if not is_maintenance and not _is_storefront_origin(page.url or ''):
+        _open_storefront_homepage(page, '[Scraper][Tab] Selected live tab was not on Shopee; opening storefront')
+        selected_snapshot = _snapshot_tab(page)
 
     try:
         browser.set.tab_to_front(target_tab_id)
     except Exception:
         pass
+
+    print(
+        f"[Scraper][Tab] Using {'maintenance' if is_maintenance else 'live'} tab "
+        f"{selected_snapshot.get('tab_id') or target_tab_id} | "
+        f"title={selected_snapshot.get('title') or 'n/a'} | "
+        f"url={selected_snapshot.get('url') or 'n/a'}",
+        file=sys.stderr,
+    )
 
     return page
 
