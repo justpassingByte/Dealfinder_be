@@ -27,7 +27,8 @@ LINK_LOCATOR = 'css:a[href*="-i."], a'
 API_PAGE_SIZE = 60
 API_TIMEOUT_SECONDS = 15
 API_RETRYABLE_ERROR_CODES = {90309999}
-API_CAPTURE_TARGET = 'api/v4/search/search_items'
+API_CAPTURE_SEARCH = 'api/v4/search/search_items'
+API_CAPTURE_PDP = 'api/v4/pdp/get_pc'
 API_CAPTURE_METHODS = ('GET',)
 API_CAPTURE_RESOURCE_TYPES = ('XHR', 'Fetch')
 
@@ -759,6 +760,16 @@ def _is_matching_search_capture(packet, query: str) -> bool:
     return True
 
 
+def _is_matching_pdp_capture(packet, query: str) -> bool:
+    try:
+        # Shopee product URLs often have shop_id and item_id in the path: /product/shopid/itemid
+        # We can extract them from the query URL or just trust the next PDP packet that arrives after navigating
+        # since it's the only one triggered by the direct navigation.
+        return API_CAPTURE_PDP in packet.request.url
+    except Exception:
+        return False
+
+
 def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
     listener = page.listen
     attempted = False
@@ -780,61 +791,35 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
             }
 
         listener.start(
-            API_CAPTURE_TARGET,
+            API_CAPTURE_SEARCH,
             method=API_CAPTURE_METHODS,
             res_type=API_CAPTURE_RESOURCE_TYPES,
         )
         attempted = True
 
-        trigger_result = _trigger_real_search(page, query)
-        if not trigger_result.get('ok') and trigger_result.get('reason') == 'search_input_not_found' and not force_homepage:
-            listener.stop()
-            _ensure_storefront_origin(page, force_homepage=True)
-
-            if not _handle_captcha(page):
-                reason = 'CAPTCHA detected before API retry'
-                return {
-                    'ok': False,
-                    'status': 0,
-                    'contentType': '',
-                    'data': None,
-                    'textSnippet': reason,
-                    'runtimeError': reason,
-                    'blocked': True,
-                    'attempted': attempted,
-                }
-
-            listener.start(
-                API_CAPTURE_TARGET,
-                method=API_CAPTURE_METHODS,
-                res_type=API_CAPTURE_RESOURCE_TYPES,
-            )
-            trigger_result = _trigger_real_search(page, query)
-
-        if not trigger_result.get('ok'):
-            reason = f"Real search trigger failed: {trigger_result.get('reason') or 'unknown_error'}"
-            return {
-                'ok': False,
-                'status': 0,
-                'contentType': '',
-                'data': None,
-                'textSnippet': reason,
-                'runtimeError': reason,
-                'attempted': attempted,
-            }
+        # Reliable Trigger via Direct Navigation (Fixes input clearing issues mentioned by user)
+        search_url = _search_url(query)
+        print(f'[Scraper][API] Capturing search via jump to {search_url}', file=sys.stderr)
+        page.run_js(f'window.location.href = "{search_url}";')
 
         deadline = time.time() + API_TIMEOUT_SECONDS
+        print(f'[Scraper][API] Bắt đầu đợi gói tin search trong {API_TIMEOUT_SECONDS}s...', file=sys.stderr)
+        
         while time.time() < deadline:
             packet = listener.wait(timeout=max(0.25, deadline - time.time()), fit_count=False)
             if not packet:
                 break
 
+            print(f'[Scraper][API] Đã bắt được packet: {packet.request.url[:150]}...', file=sys.stderr)
+
             if not _is_matching_search_capture(packet, query):
+                print(f'[Scraper][API] Packet không khớp điều kiện search, bỏ qua.', file=sys.stderr)
                 continue
 
             if packet.is_failed:
                 fail_info = packet.fail_info
                 fail_reason = getattr(fail_info, 'errorText', None) or 'Captured request failed'
+                print(f'[Scraper][API] Gói tin khớp nhưng bị lỗi mạng: {fail_reason}', file=sys.stderr)
                 return {
                     'ok': False,
                     'status': 0,
@@ -844,6 +829,14 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
                     'runtimeError': fail_reason,
                     'attempted': attempted,
                 }
+
+            print(f'[Scraper][API] Gói tin hợp lệ! Dừng render DOM...', file=sys.stderr)
+
+            # SUCCESS: Stop rendering immediately to save VPS resources (as requested by user)
+            try:
+                page.run_js('window.stop();')
+            except Exception:
+                pass
 
             response = packet.response
             body = response.body
@@ -860,6 +853,7 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
 
         if not _handle_captcha(page):
             reason = 'CAPTCHA detected while waiting for captured API response'
+            print(f'[Scraper][API] {reason}', file=sys.stderr)
             return {
                 'ok': False,
                 'status': 0,
@@ -872,6 +866,7 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
             }
 
         reason = f'Network capture timed out after {API_TIMEOUT_SECONDS}s'
+        print(f'[Scraper][API] {reason}. Đã tìm thử trong luồng mạng.', file=sys.stderr)
         return {
             'ok': False,
             'status': 0,
@@ -882,6 +877,7 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
             'attempted': attempted,
         }
     except Exception as err:
+        print(f'[Scraper][API] Lỗi exception khi capture: {str(err)}', file=sys.stderr)
         return {
             'ok': False,
             'status': 0,
@@ -890,6 +886,89 @@ def _capture_api_page(page, query: str, force_homepage: bool = False) -> Dict:
             'textSnippet': str(err),
             'runtimeError': str(err),
             'attempted': attempted,
+        }
+    finally:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+
+def _capture_product_page(page, query: str) -> Dict:
+    listener = page.listen
+
+    try:
+        listener.start(
+            API_CAPTURE_PDP,
+            method=API_CAPTURE_METHODS,
+            res_type=API_CAPTURE_RESOURCE_TYPES,
+        )
+
+        print(f'[Scraper] Direct Mode: navigating to product page via jump...', file=sys.stderr)
+        page.run_js(f'window.location.href = "{query}";')
+
+        deadline = time.time() + API_TIMEOUT_SECONDS
+        print(f'[Scraper][API][PDP] Bắt đầu đợi gói tin PDP trong {API_TIMEOUT_SECONDS}s...', file=sys.stderr)
+        
+        while time.time() < deadline:
+            packet = listener.wait(timeout=max(0.25, deadline - time.time()), fit_count=False)
+            if not packet:
+                break
+
+            print(f'[Scraper][API][PDP] Đã bắt được packet: {packet.request.url[:150]}...', file=sys.stderr)
+
+            if not _is_matching_pdp_capture(packet, query):
+                print(f'[Scraper][API][PDP] Packet không khớp điều kiện PDP, bỏ qua.', file=sys.stderr)
+                continue
+
+            if packet.is_failed:
+                fail_info = packet.fail_info
+                fail_reason = getattr(fail_info, 'errorText', None) or 'Captured product request failed'
+                print(f'[Scraper][API][PDP] Gói tin khớp nhưng bị lỗi mạng: {fail_reason}', file=sys.stderr)
+                return {
+                    'ok': False,
+                    'status': 0,
+                    'contentType': '',
+                    'data': None,
+                    'textSnippet': fail_reason,
+                    'runtimeError': fail_reason,
+                }
+
+            print(f'[Scraper][API][PDP] Gói tin hợp lệ! Dừng render DOM...', file=sys.stderr)
+
+            # SUCCESS: Stop rendering immediately
+            try:
+                page.run_js('window.stop();')
+            except Exception:
+                pass
+
+            response = packet.response
+            body = response.body
+            content_type = str(response.headers.get('content-type') or response.mimeType or '')
+            status = int(response.status or 0)
+            return {
+                'ok': 200 <= status < 300,
+                'status': status,
+                'contentType': content_type,
+                'data': _parse_response_body_as_json(body),
+                'textSnippet': _response_text_snippet(body),
+            }
+
+        reason = f'Network capture for product timed out after {API_TIMEOUT_SECONDS}s'
+        return {
+            'ok': False,
+            'status': 0,
+            'data': None,
+            'textSnippet': reason,
+            'runtimeError': reason,
+        }
+    except Exception as err:
+        return {
+            'ok': False,
+            'status': 0,
+            'data': None,
+            'textSnippet': str(err),
+            'runtimeError': str(err),
         }
     finally:
         try:
@@ -1104,8 +1183,20 @@ def _search_via_api(page, query: str, max_items: int) -> Dict:
     )
 
 
-def _extract_product_page(page, query: str) -> List[Dict]:
-    print('[Scraper] Direct Mode: navigating to product page...', file=sys.stderr)
+def _extract_product_page(page, query: str) -> Dict:
+    payload = _capture_product_page(page, query)
+    data = payload.get('data')
+
+    if payload.get('ok') and isinstance(data, dict):
+        # Extract from API data if available
+        item_data = data.get('data') or data
+        if isinstance(item_data, dict):
+            listing = _normalize_api_listing({'item_basic': item_data})
+            if listing:
+                return _build_runtime_result(listings=[listing], channel='api')
+
+    # Fallback to DOM if capture failed or missing data
+    print('[Scraper] Direct Mode: falling back to DOM extraction...', file=sys.stderr)
     page.get(query)
     time.sleep(random.uniform(2.0, 4.0))
 
@@ -1115,16 +1206,19 @@ def _extract_product_page(page, query: str) -> List[Dict]:
     price_text = price_ele.text if price_ele else '0'
     price = _parse_number_fragment(price_text)
 
-    return [{
-        'title': title_ele.text if title_ele else 'Unknown Product',
-        'price': price,
-        'url': query,
-        'image': '',
-        'rating': 5.0,
-        'sold': 0,
-        'shop': 'Shopee',
-        'marketplace': 'shopee',
-    }]
+    return _build_runtime_result(
+        listings=[{
+            'title': title_ele.text if title_ele else 'Unknown Product',
+            'price': price,
+            'url': query,
+            'image': '',
+            'rating': 5.0,
+            'sold': 0,
+            'shop': 'Shopee',
+            'marketplace': 'shopee',
+        }],
+        channel='dom'
+    )
 
 
 def _collect_dom_search_results(page, max_items: int) -> List[Dict]:
@@ -1289,8 +1383,7 @@ def search_shopee(query: str, max_items: int = 100, is_maintenance: bool = False
         if query.startswith('http'):
             if not _handle_captcha(page):
                 return _build_runtime_result(blocked=True, error='CAPTCHA detected on product page')
-            listings = _extract_product_page(page, query)
-            return _build_runtime_result(listings=listings, channel='dom')
+            return _extract_product_page(page, query)
 
         api_result = _search_via_api(page, query, max_items)
         if not api_result.get('error'):

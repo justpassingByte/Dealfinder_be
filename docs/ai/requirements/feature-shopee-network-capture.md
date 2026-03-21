@@ -26,12 +26,13 @@ To maintain high data quality and system reliability, we need an approach that i
 ## 3. Scope for V1
 ### In Scope
 - Replace the direct `fetch` path inside the existing `_search_via_api()` logic in `shopee_scraper.py`.
-- Integrate `page.listen.start()` and `page.listen.wait()` for network capturing.
+- **Direct Mode (PDP)**: Replace DOM-based price extraction on single product pages with `api/v4/pdp/get_pc` network capture.
+- Integrate `page.listen.start()` and `page.listen.wait()` for network capturing (search and PDP).
 - Implement search triggering via UI:
   - Navigating to `shopee.vn` (home or existing tab).
   - Clearing and typing into the search input.
   - Pressing Enter or clicking the search button if needed.
-- Extracting and parsing the `api/v4/search/search_items` response body.
+- Extracting and parsing the `api/v4/search/search_items` and `api/v4/pdp/get_pc` response bodies.
 - Fallback to existing DOM scraping if capture fails.
 - Tab reuse and session maintenance.
 

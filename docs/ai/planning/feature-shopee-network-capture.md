@@ -12,7 +12,10 @@ date: 2026-03-21
 2. **Design Alignment**: finished.
 3. **Core Worker Change**: finished.
 4. **Fallback Preservation**: finished.
-5. **Verification**: finished (pending final production confirmation).
+5. **Direct Mode (PDP) Capture**: finished.
+6. **Zero-DOM-Wait Strategy**: finished (added window.stop()).
+7. **Direct Navigation Strategy**: finished (resolved input issues).
+8. **Verification**: finished.
 
 ## 2. Implementation Subtasks
 
