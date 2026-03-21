@@ -46,6 +46,9 @@ SEARCH_BUTTON_SELECTORS = (
     'button[aria-label*="Search"]',
 )
 
+SEARCH_INPUT_SELECTORS_JS = json.dumps(list(SEARCH_INPUT_SELECTORS), ensure_ascii=False)
+SEARCH_BUTTON_SELECTORS_JS = json.dumps(list(SEARCH_BUTTON_SELECTORS), ensure_ascii=False)
+
 PRODUCT_PRICE_LOCATOR = 'css:.pqTW9c, .G27LRz, ._2nzS9m'
 PRODUCT_TITLE_LOCATOR = 'css:.V_Y_S_, ._29_p48'
 
@@ -407,7 +410,8 @@ def _wait_for_document_ready(page, timeout_seconds: int = 10) -> None:
 
 def _perform_random_warm_actions(page, query: str) -> None:
     script = """
-        const [keyword, inputSelectors] = arguments;
+        const [keyword] = arguments;
+        const inputSelectors = __INPUT_SELECTORS__;
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
         const choice = (items) => items[Math.floor(Math.random() * items.length)];
@@ -471,9 +475,10 @@ def _perform_random_warm_actions(page, query: str) -> None:
             keywordLength: String(keyword || '').length,
         };
     """
+    script = script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
 
     try:
-        result = page.run_js(script, query, list(SEARCH_INPUT_SELECTORS), timeout=20)
+        result = page.run_js(script, query, timeout=20)
         actions = result.get('actions') if isinstance(result, dict) else None
         if isinstance(actions, list) and actions:
             print(f"[Scraper][Warm] {', '.join(str(action) for action in actions)}", file=sys.stderr)
@@ -500,7 +505,9 @@ def _wait_for_search_ready(page, query: str, timeout_seconds: int = 15) -> bool:
 
 def _trigger_real_search(page, query: str) -> Dict:
     script = """
-        const [keyword, inputSelectors, buttonSelectors] = arguments;
+        const [keyword] = arguments;
+        const inputSelectors = __INPUT_SELECTORS__;
+        const buttonSelectors = __BUTTON_SELECTORS__;
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
         const isVisible = (el) => !!(el && el.isConnected && el.offsetParent !== null);
@@ -566,15 +573,11 @@ def _trigger_real_search(page, query: str) -> Dict:
 
         return { ok: true, method: 'enter' };
     """
+    script = script.replace('__INPUT_SELECTORS__', SEARCH_INPUT_SELECTORS_JS)
+    script = script.replace('__BUTTON_SELECTORS__', SEARCH_BUTTON_SELECTORS_JS)
 
     try:
-        result = page.run_js(
-            script,
-            query,
-            list(SEARCH_INPUT_SELECTORS),
-            list(SEARCH_BUTTON_SELECTORS),
-            timeout=25,
-        )
+        result = page.run_js(script, query, timeout=25)
         if isinstance(result, dict):
             return result
     except Exception as err:
@@ -730,7 +733,7 @@ def _ensure_search_page(page, query: str) -> None:
 
 def _fetch_api_page(page, query: str, limit: int, newest: int, search_context: Optional[Dict] = None) -> Dict:
     script = """
-        const [keyword, limit, newest, searchContext] = arguments;
+        const [keyword, limit, newest, searchSessionId, globalSearchSessionId, viewSessionId] = arguments;
         const params = new URLSearchParams({
             keyword,
             limit: String(limit),
@@ -739,9 +742,14 @@ def _fetch_api_page(page, query: str, limit: int, newest: int, search_context: O
             page_type: 'search',
         });
 
-        for (const key of ['search_session_id', 'global_search_session_id', 'view_session_id']) {
-            const value = searchContext && typeof searchContext[key] === 'string' ? searchContext[key] : '';
-            if (value) {
+        const dynamicParams = {
+            search_session_id: searchSessionId,
+            global_search_session_id: globalSearchSessionId,
+            view_session_id: viewSessionId,
+        };
+
+        for (const [key, value] of Object.entries(dynamicParams)) {
+            if (typeof value === 'string' && value) {
                 params.set(key, value);
             }
         }
@@ -774,8 +782,22 @@ def _fetch_api_page(page, query: str, limit: int, newest: int, search_context: O
         }));
     """
 
+    search_context = search_context or {}
+    search_session_id = str(search_context.get('search_session_id') or '')
+    global_search_session_id = str(search_context.get('global_search_session_id') or '')
+    view_session_id = str(search_context.get('view_session_id') or '')
+
     try:
-        result = page.run_js(script, query, limit, newest, search_context or {}, timeout=API_TIMEOUT_SECONDS)
+        result = page.run_js(
+            script,
+            query,
+            limit,
+            newest,
+            search_session_id,
+            global_search_session_id,
+            view_session_id,
+            timeout=API_TIMEOUT_SECONDS,
+        )
     except Exception as err:
         return {
             'ok': False,
